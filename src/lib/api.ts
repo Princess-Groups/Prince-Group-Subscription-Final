@@ -1,11 +1,11 @@
 /**
- * API client — calls the Cloudflare Worker instead of Supabase edge functions.
- * Update WORKER_URL after deployment.
+ * API client — calls the Vercel serverless function at /api/<route>
+ * (which replaced the original Cloudflare Worker). Set
+ * VITE_API_WORKER_URL if you want to point at a different origin
+ * (e.g. a local API during development).
  */
 
-// In development, wrangler dev runs on port 8788 by default.
-// In production, this is your deployed worker URL.
-const WORKER_URL = import.meta.env.VITE_API_WORKER_URL || "https://prince-groups-api.megha19102004.workers.dev";
+const WORKER_URL = import.meta.env.VITE_API_WORKER_URL ?? "";
 
 type ApiResponse<T = unknown> = {
   data?: T;

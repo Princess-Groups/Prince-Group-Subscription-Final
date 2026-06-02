@@ -6,4 +6,33 @@
 // You can pass additional config via defineConfig({ vite: { ... } }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-export default defineConfig();
+export default defineConfig({
+  // Disable the Cloudflare Vite plugin so the build does not produce a Cloudflare worker
+  // output. We deploy the frontend as a static SPA on Vercel.
+  cloudflare: false,
+  // Tell the TanStack Start plugin to emit a static SPA (one index.html per route)
+  // and pre-render every known page so Vercel's static hosting can serve them.
+  tanstackStart: {
+    spa: {
+      enabled: true,
+      // Render the SPA shell directly to /index.html so Vercel's static
+      // hosting serves it for the document root. Sub-routes are still
+      // emitted as their own /<route>/index.html by `pages` below.
+      prerender: {
+        enabled: true,
+        crawlLinks: false,
+        autoSubfolderIndex: true,
+        outputPath: "/index.html",
+      },
+    },
+    // Explicitly enumerate the static routes so each one is prerendered,
+    // regardless of whether the crawler can reach it from the index.
+    pages: [
+      { path: "/", prerender: { enabled: true } },
+      { path: "/plans", prerender: { enabled: true } },
+      { path: "/earnings", prerender: { enabled: true } },
+      { path: "/benefits", prerender: { enabled: true } },
+      { path: "/contact", prerender: { enabled: true } },
+    ],
+  },
+});
