@@ -16,11 +16,16 @@ dist-ssr
 .nitro
 *.local
 
-# Environment variables - NEVER commit these!
+# Environment variables - NEVER commit your local secrets!
 .env
 .env.local
 .env.*.local
 supabase/.env.local
+
+# Exception: production publishable keys are safe to commit (they are
+# embedded in the browser bundle anyway, by design). Keep this file's
+# contents limited to VITE_* values.
+!.env.production
 
 # Wrangler / Cloudflare
 .wrangler/

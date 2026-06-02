@@ -1,7 +1,6 @@
 # Vercel Deployment
 
-This project now runs as a **static SPA + serverless API on Vercel** — the
-Cloudflare Worker + Wrangler setup has been replaced.
+This project runs as a **static SPA + serverless API on Vercel**.
 
 ## How it works
 
@@ -10,13 +9,9 @@ Cloudflare Worker + Wrangler setup has been replaced.
   `index.html` in `dist/client/`. Vercel serves those files directly.
 - **API** — `api/[route].ts` is a Vercel serverless function. The frontend
   POSTs to `/api/<route>` (same origin) and the function dispatches to the
-  same six handlers that the old Cloudflare Worker exposed:
-  - `save-payment`
-  - `create-razorpay-order`
-  - `confirm-razorpay-payment`
-  - `cancel-subscription`
-  - `send-whatsapp`
-  - `razorpay-webhook`
+  same six handlers the old Cloudflare Worker exposed:
+  `save-payment`, `create-razorpay-order`, `confirm-razorpay-payment`,
+  `cancel-subscription`, `send-whatsapp`, `razorpay-webhook`.
 
 ## Deploy
 
@@ -25,43 +20,65 @@ Cloudflare Worker + Wrangler setup has been replaced.
    `vercel.json` automatically and uses:
    - Build command: `npm run build`
    - Output directory: `dist/client`
-3. Add these environment variables in **Settings → Environment Variables**:
 
-   | Variable | Notes |
-   | --- | --- |
-   | `VITE_SUPABASE_URL` | Public Supabase project URL |
-   | `VITE_SUPABASE_PUBLISHABLE_KEY` | Public anon/publishable key |
-   | `VITE_SUPABASE_PROJECT_ID` | Project ID |
-   | `VITE_RAZORPAY_KEY_ID` | `rzp_live_*` for production |
-   | `SUPABASE_URL` | Same project URL (server-side) |
-   | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key (server-side only) |
-   | `RAZORPAY_KEY_ID` | `rzp_live_*` |
-   | `RAZORPAY_KEY_SECRET` | Razorpay secret |
-   | `RAZORPAY_WEBHOOK_SECRET` | From Razorpay dashboard |
-   | `WHATSAPP_API_TOKEN` | Optional |
-   | `WHATSAPP_PHONE_ID` | Optional |
-   | `OWNER_WHATSAPP` | Optional notification recipient |
+### What's already configured (no action needed)
 
-4. In the **Razorpay dashboard → Webhooks**, point the webhook at:
+The file **`.env.production`** is committed to the repo and contains the
+**public, publishable** env vars Vite needs at build time. These values
+are designed to be public — they end up in the browser bundle either way:
+
+| Variable | Purpose |
+| --- | --- |
+| `VITE_SUPABASE_URL` | Supabase project URL |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Public anon/publishable key |
+| `VITE_SUPABASE_PROJECT_ID` | Project ID |
+| `VITE_RAZORPAY_KEY_ID` | Live Razorpay key ID (`rzp_live_*`) |
+| `VITE_API_WORKER_URL` | Empty → SPA calls `/api/<route>` on same origin |
+
+If you ever need to change these, edit `.env.production` and push — no
+Vercel dashboard step required.
+
+### What you must add in Vercel (secrets only)
+
+In **Project Settings → Environment Variables**, add the **server-side
+secrets** used by the `/api/*` function. These are read at request time
+from `process.env`, never shipped to the browser:
+
+| Variable | Where to get it |
+| --- | --- |
+| `SUPABASE_URL` | Same Supabase project URL (already in `.env.production` but the serverless function reads it independently) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → Settings → API |
+| `RAZORPAY_KEY_ID` | `rzp_live_*` from Razorpay dashboard |
+| `RAZORPAY_KEY_SECRET` | Razorpay dashboard |
+| `RAZORPAY_WEBHOOK_SECRET` | Razorpay dashboard → Webhooks |
+| `WHATSAPP_API_TOKEN` | Optional — Meta for Developers |
+| `WHATSAPP_PHONE_ID` | Optional — Meta for Developers |
+| `OWNER_WHATSAPP` | Optional — destination phone number |
+
+Set these for **Production** at minimum. Click into the same dialog and
+tick "Preview" too if you want them on preview deploys.
+
+3. In **Razorpay dashboard → Webhooks**, point the webhook at:
 
    ```
    https://<your-app>.vercel.app/api/razorpay-webhook
    ```
 
-5. (Optional) Override the API base in the frontend by setting
-   `VITE_API_WORKER_URL` if you ever want to point at a separate API origin.
-   When unset, the SPA calls `/api/<route>` on the same origin (default).
+   Subscribe to: `payment.authorized`, `payment.failed`, `refund.created`.
 
 ## Local dev
 
-The Vite dev server (port 8080) does not run the API routes. To exercise the
-payment flow locally you have two options:
+The Vite dev server (port 8080 / 8081) serves the SPA only — it does not
+run the Vercel serverless function. For local end-to-end testing of the
+API use `npx vercel dev` (after `vercel login` and linking the project).
 
-- Run a separate Vercel dev process: `npx vercel dev` (after `vercel login`).
-- Or set `VITE_API_WORKER_URL` in `.env` to point at a deployed preview.
+## Troubleshooting
 
-## Migrating away from Cloudflare
-
-You can safely delete `functions-api/` and `wrangler.jsonc` — they are no
-longer used by the build. `.wrangler/`, `dist/server/`, and the `wrangler`
-dev dependency can be removed from `package.json` if you want a clean tree.
+- **Site shows "Something went wrong"** — open the browser dev console.
+  The Supabase client logs which env var is missing. (This is rare now:
+  the public vars ship in `.env.production`.)
+- **Payments fail silently** — check Vercel → Logs for the function
+  invocation. The most common cause is a missing `RAZORPAY_KEY_SECRET` or
+  `SUPABASE_SERVICE_ROLE_KEY`.
+- **Webhook signature errors** — make sure `RAZORPAY_WEBHOOK_SECRET`
+  matches the secret shown in the Razorpay dashboard for this webhook.
