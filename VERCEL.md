@@ -54,6 +54,9 @@ from `process.env`, never shipped to the browser:
 | `WHATSAPP_API_TOKEN` | Optional — Meta for Developers |
 | `WHATSAPP_PHONE_ID` | Optional — Meta for Developers |
 | `OWNER_WHATSAPP` | Optional — destination phone number |
+| `SMTP_EMAIL` | Gmail address used to send emails (e.g., `groupprince43@gmail.com`) |
+| `SMTP_PASSWORD` | Gmail app password for SMTP auth |
+| `OWNER_EMAIL` | Email address to receive new-subscription notifications |
 
 Set these for **Production** at minimum. Click into the same dialog and
 tick "Preview" too if you want them on preview deploys.

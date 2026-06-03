@@ -4,6 +4,7 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import nodemailer from "nodemailer";
 
 type RouteHandler = (req: VercelRequest, res: VercelResponse) => Promise<void> | void;
 
@@ -47,8 +48,8 @@ async function readRawBody(req: VercelRequest): Promise<string> {
 // ────────────────────────────────────────────
 const savePayment: RouteHandler = async (req, res) => {
   const {
-    userId, planId, razorpayOrderId, razorpayPaymentId, razorpaySubscriptionId,
-    amount, username, mobile,
+    userId, planId, planName, razorpayOrderId, razorpayPaymentId, razorpaySubscriptionId,
+    amount, username, mobile, email,
   } = await readJson(req);
 
   if (!userId || !planId || !razorpayPaymentId || !amount) {
@@ -105,6 +106,14 @@ const savePayment: RouteHandler = async (req, res) => {
       method: "PATCH", headers: supabaseHeaders(), body: JSON.stringify(updates),
     }).catch(() => {});
   }
+
+  // Send email notification (best-effort, don't block the response)
+  sendEmailNotification({
+    subscriptionId: subId,
+    planName: planName || planId || "",
+    username: username || "",
+    email: email || "",
+  }).catch((err) => console.error("Email notification failed:", err));
 
   return res.status(200).json({ success: true, subscriptionId: subId });
 };
@@ -238,26 +247,90 @@ const cancelSubscription: RouteHandler = async (req, res) => {
 };
 
 // ────────────────────────────────────────────
-// 5. SEND WHATSAPP
+// EMAIL HELPER (shared between savePayment and sendEmail)
 // ────────────────────────────────────────────
-const sendWhatsApp: RouteHandler = async (req, res) => {
-  const { subscriptionId, userId, planName, username, mobile } = await readJson(req);
+type EmailData = { subscriptionId: string; planName: string; username: string; email: string };
 
-  if (!env("WHATSAPP_API_TOKEN") || !env("WHATSAPP_PHONE_ID")) {
-    console.warn("WhatsApp credentials not set, skipping notification");
-    return res.status(200).json({ success: true, skipped: true });
+async function sendEmailNotification(data: EmailData): Promise<void> {
+  const { subscriptionId, planName, username, email } = data;
+  const fromEmail = env("SMTP_EMAIL") || "noreply@princegroups.com";
+  const appPassword = env("SMTP_PASSWORD");
+  const ownerEmail = env("OWNER_EMAIL") || fromEmail;
+
+  if (!appPassword) {
+    console.warn("sendEmailNotification: SMTP_PASSWORD not set, skipping email");
+    return;
   }
 
-  const owner = env("OWNER_WHATSAPP") || "919559155535";
-  const message = `🎉 *New Subscription Activated!*\n\n👤 *Name:* ${username || "N/A"}\n📱 *Mobile:* ${mobile || "N/A"}\n📦 *Plan:* ${planName}\n🔑 *Sub ID:* ${subscriptionId}\n✅ *Auto-Pay:* Enabled (Razorpay)\n\n_Prince Groups — Kanyakumari_`;
-
-  const waRes = await fetch(`https://graph.facebook.com/v19.0/${env("WHATSAPP_PHONE_ID")}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env("WHATSAPP_API_TOKEN")}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", to: owner, type: "text", text: { body: message } }),
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: fromEmail, pass: appPassword },
   });
-  if (!waRes.ok) console.error("WhatsApp API error:", await waRes.text());
 
+  // 1. Email to the user (if email provided)
+  if (email) {
+    try {
+      await transporter.sendMail({
+        from: `"Prince Groups" <${fromEmail}>`,
+        to: email,
+        subject: "🎉 Welcome to Prince Groups — Membership Activated!",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; background: #fafafa; border-radius: 12px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <h1 style="color: #0f766e; margin: 0;">🌟 Prince Groups</h1>
+              <p style="color: #888; font-size: 13px;">Kanyakumari</p>
+            </div>
+            <div style="background: white; border-radius: 10px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
+              <h2 style="margin: 0 0 16px; color: #1a1a2e;">Welcome, ${username || "Valued Member"}! 🎉</h2>
+              <p style="color: #555; line-height: 1.6;">Your membership is now <strong style="color: #0f766e;">active</strong>.</p>
+              <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+                <tr><td style="padding: 8px 0; color: #888;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${planName}</td></tr>
+                <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Auto-Pay</td><td style="padding: 8px 0; font-weight: bold; text-align: right; border-top: 1px solid #eee; color: #0f766e;">✅ Enabled</td></tr>
+                <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Next charge</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee;">In 30 days</td></tr>
+                <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Subscription ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px; color: #999;">${subscriptionId}</td></tr>
+              </table>
+              <p style="color: #555; line-height: 1.6; font-size: 14px;">Thank you for joining! For any queries, reply to this email or contact us.</p>
+            </div>
+            <p style="text-align: center; font-size: 12px; color: #bbb; margin-top: 20px;">Prince Groups — Kanyakumari</p>
+          </div>
+        `,
+      });
+      console.log(`Email sent to user ${email} for subscription ${subscriptionId}`);
+    } catch (err) {
+      console.error(`sendEmailNotification: Email to user (${email}) failed:`, err);
+    }
+  }
+
+  // 2. Email to the owner
+  try {
+    await transporter.sendMail({
+      from: `"Prince Groups" <${fromEmail}>`,
+      to: ownerEmail,
+      subject: "🎉 New Subscription Activated!",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; background: #fafafa; border-radius: 12px;">
+          <h2 style="color: #1a1a2e;">New Subscription</h2>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 8px 0; color: #888;">Name</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${username || "N/A"}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Email</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee;">${email || "N/A"}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right; border-top: 1px solid #eee;">${planName}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Sub ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px;">${subscriptionId}</td></tr>
+          </table>
+        </div>
+      `,
+    });
+    console.log(`Email sent to owner ${ownerEmail} for subscription ${subscriptionId}`);
+  } catch (err) {
+    console.error(`sendEmailNotification: Email to owner (${ownerEmail}) failed:`, err);
+  }
+}
+
+// ────────────────────────────────────────────
+// 5. SEND EMAIL (free — uses Gmail SMTP)
+// ────────────────────────────────────────────
+const sendEmail: RouteHandler = async (req, res) => {
+  const { subscriptionId, planName, username, email } = await readJson(req);
+  await sendEmailNotification({ subscriptionId, planName, username, email });
   return res.status(200).json({ success: true });
 };
 
@@ -319,7 +392,7 @@ const routes: Record<string, RouteHandler> = {
   "create-razorpay-order": createRazorpayOrder,
   "confirm-razorpay-payment": confirmRazorpayPayment,
   "cancel-subscription": cancelSubscription,
-  "send-whatsapp": sendWhatsApp,
+  "send-email": sendEmail,
   "razorpay-webhook": razorpayWebhook,
 };
 

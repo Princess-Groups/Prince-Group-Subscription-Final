@@ -32,12 +32,14 @@ async function invoke<T = unknown>(route: string, body: Record<string, unknown>)
 export interface SavePaymentInput {
   userId: string;
   planId: string;
+  planName?: string;
   razorpayOrderId?: string | null;
   razorpayPaymentId: string;
   razorpaySubscriptionId?: string | null;
   amount: number;
   username: string;
   mobile: string;
+  email?: string;
 }
 
 export interface SavePaymentOutput {
@@ -55,12 +57,12 @@ export interface CancelSubscriptionOutput {
   message: string;
 }
 
-export interface SendWhatsAppInput {
+export interface SendEmailInput {
   subscriptionId: string;
   userId: string;
   planName: string;
   username: string;
-  mobile: string;
+  email: string;
 }
 
 export interface CreateOrderInput {
@@ -88,6 +90,6 @@ export const api = {
   cancelSubscription: (input: CancelSubscriptionInput) =>
     invoke<CancelSubscriptionOutput>("cancel-subscription", input as unknown as Record<string, unknown>),
 
-  sendWhatsApp: (input: SendWhatsAppInput) =>
-    invoke("send-whatsapp", input as unknown as Record<string, unknown>),
+  sendEmail: (input: SendEmailInput) =>
+    invoke("send-email", input as unknown as Record<string, unknown>),
 };

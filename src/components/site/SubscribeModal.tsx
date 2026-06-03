@@ -4,7 +4,7 @@ import { X, Check, Loader2, Sparkles, LogIn, UserPlus, RefreshCw, XCircle, User,
 import { supabase } from "@/integrations/supabase/client";
 import { api } from "@/lib/api";
 
-type Step = "auth" | "pay" | "success";
+type Step = "auth" | "pay" | "success" | "upgrade";
 type AuthMode = "login" | "register";
 type Ctx = { open: (plan: PlanId) => void };
 const SubCtx = createContext<Ctx | null>(null);
@@ -59,6 +59,8 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
 
   // Prevent duplicate signup calls
   const signupInFlightRef = useRef(false);
+  // Tracks that we are in an upgrade flow — so the Razorpay handler knows to cancel the old sub
+  const upgradeInFlightRef = useRef(false);
 
   const plan = PLANS.find((p) => p.id === planId);
 
@@ -93,6 +95,13 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
     }
   }, [user, planId, step]);
 
+  // If subscription loads while modal is on pay step → advance based on plan match
+  useEffect(() => {
+    if (subscription && planId && step === "pay") {
+      setStep(subscription.plan_id === planId ? "success" : "upgrade");
+    }
+  }, [subscription, planId, step]);
+
   const loadSubscription = async (userId: string) => {
     const { data } = await supabase
       .from("subscriptions")
@@ -107,9 +116,14 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
   const open = useCallback((id: PlanId) => {
     setPlanId(id);
     setError(null);
-    setStep(user ? "pay" : "auth");
+    if (subscription) {
+      // Same plan → already subscribed; different plan → upgrade
+      setStep(subscription.plan_id === id ? "success" : "upgrade");
+    } else {
+      setStep(user ? "pay" : "auth");
+    }
     if (!user) setAuthMode("login");
-  }, [user]);
+  }, [user, subscription]);
 
   const close = () => {
     setPlanId(null);
@@ -232,6 +246,16 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
 
   const startPayment = async () => {
     if (!plan || !user || loading) return;
+    // Guard: don't let already-subscribed users pay again
+    if (subscription) {
+      if (subscription.plan_id === planId) {
+        setStep("success");
+        return;
+      }
+      // Upgrade flow: mark upgrade, but DON'T cancel old sub yet.
+      // Wait for successful payment in the Razorpay handler.
+      upgradeInFlightRef.current = true;
+    }
     setLoading(true);
     setError(null);
 
@@ -260,29 +284,33 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
         modal: { ondismiss: () => setLoading(false) },
         handler: async (response: any) => {
           try {
-            // Save payment to DB via API worker
-            const { error: saveErr } = await api.savePayment({
+            // If upgrading, cancel old subscription first (only after payment succeeds)
+            if (upgradeInFlightRef.current && subscription?.razorpay_subscription_id) {
+              await api.cancelSubscription({
+                subscriptionId: subscription.id,
+                razorpaySubscriptionId: subscription.razorpay_subscription_id,
+              });
+              upgradeInFlightRef.current = false;
+            }
+
+            // Save payment to DB via API worker (also sends email server-side)
+            const { data: saveData, error: saveErr } = await api.savePayment({
               userId: user.id,
               planId,
+              planName: plan.name,
               razorpaySubscriptionId: response.razorpay_subscription_id || null,
               razorpayOrderId: response.razorpay_order_id || null,
               razorpayPaymentId: response.razorpay_payment_id,
               amount: planConfig.amount,
               username: displayName,
               mobile: displayMobile,
+              email: displayEmail,
             });
             if (saveErr) throw new Error(saveErr.message);
-
-            // WhatsApp notification (best-effort, don't block on failure)
-            api.sendWhatsApp({
-              subscriptionId: response.razorpay_payment_id,
-              userId: user.id,
-              planName: plan.name,
-              username: displayName,
-              mobile: displayMobile,
-            }).catch(() => {}); // fire-and-forget
+            const subId = saveData?.subscriptionId || response.razorpay_payment_id;
 
             // Reload subscription record and show success
+            setSubscription(null); // clear cached so loadSubscription fetches the new one
             await loadSubscription(user.id);
             setStep("success");
           } catch (err) {
@@ -325,11 +353,13 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                 {step === "auth" && (authMode === "login" ? "Sign in to continue" : "Create your account")}
                 {step === "pay" && "Confirm & activate auto-pay"}
                 {step === "success" && "Membership activated! 🎉"}
+                {step === "upgrade" && "Upgrade your membership"}
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
                 {step === "auth" && `${plan.name} · ₹${plan.price}/day · Cancel anytime`}
                 {step === "pay" && `₹${plan.price}/day auto-pay via Razorpay. Cancel anytime.`}
                 {step === "success" && "Your auto-pay membership is now live."}
+                {step === "upgrade" && `Move from ${PLANS.find(p => p.id === subscription?.plan_id)?.name || "current"} to ${plan.name} · ₹${plan.price}/day`}
               </p>
 
               {/* ── STEP 1: AUTH ── */}
@@ -481,7 +511,68 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                 </div>
               )}
 
-              {/* ── STEP 3: SUCCESS ── */}
+              {/* ── STEP 3: UPGRADE ── */}
+              {step === "upgrade" && subscription && (
+                <div className="mt-6 space-y-4">
+                  {/* Current plan card */}
+                  <div className="rounded-xl border border-border bg-muted/50 p-4">
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Current Plan</p>
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-pine-deep">{PLANS.find(p => p.id === subscription.plan_id)?.name || subscription.plan_id}</span>
+                      <span className="text-xs text-muted-foreground">Auto-Pay ✅ Active</span>
+                    </div>
+                  </div>
+
+                  {/* Arrow down */}
+                  <div className="flex justify-center text-muted-foreground">
+                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+                  </div>
+
+                  {/* New plan card */}
+                  <div className="rounded-xl bg-gold/10 border border-gold/30 p-4">
+                    <p className="text-xs font-bold uppercase tracking-widest text-gold mb-2">Upgrade To</p>
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-pine-deep text-lg">{plan.name}</span>
+                      <span className="text-sm font-bold text-gold">₹{plan.price}/day</span>
+                    </div>
+                  </div>
+
+                  {/* Upgrade benefits */}
+                  <div className="rounded-xl bg-muted p-4 text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">New discount</span>
+                      <span className="font-semibold text-avocado">{plan.discount}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Monthly charge</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price * 30}/month</span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground text-center">
+                    Your current subscription will be cancelled and replaced with the new plan.
+                  </p>
+
+                  {error && <p className="text-sm text-destructive text-center">{error}</p>}
+
+                  <button onClick={startPayment} disabled={loading}
+                    className="w-full rounded-full bg-gold text-pine-deep font-bold py-3.5 shadow-glow hover:scale-[1.02] transition disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {loading
+                      ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
+                      : `Upgrade to ${plan.name} · Pay ₹${plan.price} →`
+                    }
+                  </button>
+
+                  <button onClick={close}
+                    className="w-full rounded-full border border-border text-muted-foreground font-semibold py-2.5 transition hover:bg-muted"
+                  >
+                    Keep Current Plan
+                  </button>
+                </div>
+              )}
+
+              {/* ── STEP 4: SUCCESS ── */}
               {step === "success" && (
                 <div className="mt-6 text-center space-y-4">
                   <div className="mx-auto h-20 w-20 rounded-full bg-avocado/15 grid place-items-center animate-glow">
@@ -517,7 +608,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    A confirmation will be sent to your WhatsApp. Welcome to Prince Groups!
+                    A confirmation will be sent to your email. Welcome to Prince Groups!
                   </p>
 
                   {subscription?.razorpay_subscription_id && (
