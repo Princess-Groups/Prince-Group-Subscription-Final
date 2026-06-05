@@ -33,6 +33,8 @@ export default defineConfig({
       { path: "/earnings", prerender: { enabled: true } },
       { path: "/benefits", prerender: { enabled: true } },
       { path: "/contact", prerender: { enabled: true } },
+      { path: "/my-services", prerender: { enabled: true } },
+      { path: "/admin", prerender: { enabled: true } },
     ],
   },
 });

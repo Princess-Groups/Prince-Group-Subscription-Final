@@ -6,6 +6,7 @@ import logo from "@/assets/prince-logo.png";
 const nav = [
   { to: "/", label: "Home" },
   { to: "/plans", label: "Plans" },
+  { to: "/my-services", label: "Services" },
   { to: "/benefits", label: "Benefits" },
   { to: "/earnings", label: "Referral" },
   { to: "/contact", label: "Contact" },
@@ -66,12 +67,20 @@ export function Header() {
               </Link>
             ))}
           </nav>
-          <Link
-            to="/plans"
-            className="hidden lg:inline-flex items-center gap-2 rounded-full bg-hero px-5 py-2.5 text-sm font-semibold text-white shadow-luxury hover:shadow-glow transition-all"
-          >
-            Join Now
-          </Link>
+          <div className="hidden lg:flex items-center gap-2">
+            <Link
+              to="/admin"
+              className="inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-pine-deep hover:bg-muted transition"
+            >
+              Admin
+            </Link>
+            <Link
+              to="/plans"
+              className="inline-flex items-center gap-2 rounded-full bg-hero px-5 py-2.5 text-sm font-semibold text-white shadow-luxury hover:shadow-glow transition-all"
+            >
+              Join Now
+            </Link>
+          </div>
           <button
             className="lg:hidden h-10 w-10 grid place-items-center rounded-xl glass"
             onClick={() => setOpen((v) => !v)}
@@ -92,6 +101,13 @@ export function Header() {
                 {n.label}
               </Link>
             ))}
+            <Link
+              to="/admin"
+              onClick={() => setOpen(false)}
+              className="block px-4 py-3 rounded-xl text-foreground hover:bg-cream"
+            >
+              Admin
+            </Link>
             <Link
               to="/plans"
               onClick={() => setOpen(false)}

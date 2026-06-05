@@ -80,6 +80,17 @@ export interface CreateOrderOutput {
   isSubscription: boolean;
 }
 
+export interface AdminLoginInput {
+  username: string;
+  password: string;
+}
+
+export interface AdminData {
+  profiles: any[];
+  subscriptions: any[];
+  payments: any[];
+}
+
 export const api = {
   savePayment: (input: SavePaymentInput) =>
     invoke<SavePaymentOutput>("save-payment", input as unknown as Record<string, unknown>),
@@ -92,4 +103,7 @@ export const api = {
 
   sendEmail: (input: SendEmailInput) =>
     invoke("send-email", input as unknown as Record<string, unknown>),
+
+  adminLogin: (input: AdminLoginInput) =>
+    invoke<AdminData>("admin-login", input as unknown as Record<string, unknown>),
 };

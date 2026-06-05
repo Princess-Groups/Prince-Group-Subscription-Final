@@ -129,9 +129,9 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
   const authHeader = { Authorization: `Basic ${razorpayAuth}`, "Content-Type": "application/json" };
 
   const plans: Record<string, { amount: number; monthlyAmount: number; name: string; description: string }> = {
-    starter: { amount: 100, monthlyAmount: 3000, name: "₹1 Plan", description: "Starter daily membership" },
-    popular: { amount: 1000, monthlyAmount: 30000, name: "₹10 Plan", description: "Popular daily membership" },
-    premium: { amount: 10000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium daily membership" },
+    starter: { amount: 100, monthlyAmount: 3000, name: "₹1 Plan", description: "Starter – ₹30/month subscription" },
+    popular: { amount: 1000, monthlyAmount: 30000, name: "₹10 Plan", description: "Popular – ₹300/month subscription" },
+    premium: { amount: 10000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
   };
 
   const plan = plans[planId as string];
@@ -161,7 +161,7 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
     method: "POST", headers: authHeader,
     body: JSON.stringify({
       plan_id: razorpayPlanId, total_count: 120, quantity: 1, customer_notify: 1,
-      addons: [{ item: { name: "First day charge", amount: plan.amount, currency: "INR" } }],
+      addons: [{ item: { name: "First month subscription", amount: plan.monthlyAmount, currency: "INR" } }],
       notes: { plan_key: planId, plan_name: plan.name },
     }),
   });
@@ -385,7 +385,36 @@ const razorpayWebhook: RouteHandler = async (req, res) => {
 };
 
 // ────────────────────────────────────────────
-// DISPATCHER
+// 7. ADMIN LOGIN — hardcoded credentials
+// ────────────────────────────────────────────
+const adminLogin: RouteHandler = async (req, res) => {
+  const { username, password } = await readJson(req);
+
+  if (username !== "PrinceAdmin" || password !== "BeemBoy@123") {
+    return res.status(401).json({ error: "Invalid admin credentials" });
+  }
+
+  const headers = supabaseHeaders();
+
+  // Fetch all data in parallel
+  const [profilesRes, subsRes, paysRes] = await Promise.all([
+    fetch(`${env("SUPABASE_URL")}/rest/v1/profiles?select=*&order=created_at.desc`, { headers }),
+    fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?select=*,plans(name)&order=created_at.desc`, { headers }),
+    fetch(`${env("SUPABASE_URL")}/rest/v1/payments?select=*&order=created_at.desc`, { headers }),
+  ]);
+
+  if (!profilesRes.ok) {
+    return res.status(500).json({ error: "Failed to fetch profiles" });
+  }
+
+  const profiles = await profilesRes.json();
+  const subscriptions = subsRes.ok ? await subsRes.json() : [];
+  const payments = paysRes.ok ? await paysRes.json() : [];
+
+  return res.status(200).json({
+    profiles, subscriptions, payments,
+  });
+};
 // ────────────────────────────────────────────
 const routes: Record<string, RouteHandler> = {
   "save-payment": savePayment,
@@ -394,6 +423,7 @@ const routes: Record<string, RouteHandler> = {
   "cancel-subscription": cancelSubscription,
   "send-email": sendEmail,
   "razorpay-webhook": razorpayWebhook,
+  "admin-login": adminLogin,
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { PLANS, type PlanId } from "@/data/site";
+import { useNavigate } from "@tanstack/react-router";
 import { X, Check, Loader2, Sparkles, LogIn, UserPlus, RefreshCw, XCircle, User, Phone, Mail } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { api } from "@/lib/api";
@@ -42,6 +43,7 @@ type Subscription = {
 };
 
 export function SubscribeProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [planId, setPlanId] = useState<PlanId | null>(null);
   const [step, setStep] = useState<Step>("auth");
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -235,11 +237,11 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
       document.body.appendChild(s);
     });
 
-  // Plan config matching the old edge function
+  // Plan config — monthlyAmount is charged upfront (the full monthly fee)
   const PLAN_CONFIG: Record<string, { amount: number; monthlyAmount: number; name: string; description: string }> = {
-    starter: { amount: 100,   monthlyAmount: 3000,   name: "₹1 Plan",   description: "Starter daily membership – ₹30/month autopay" },
-    popular: { amount: 1000,  monthlyAmount: 30000,  name: "₹10 Plan",  description: "Popular daily membership – ₹300/month autopay" },
-    premium: { amount: 10000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium daily membership – ₹3000/month autopay" },
+    starter: { amount: 3000,   monthlyAmount: 3000,   name: "₹1 Plan",   description: "Starter – ₹30/month subscription" },
+    popular: { amount: 30000,  monthlyAmount: 30000,  name: "₹10 Plan",  description: "Popular – ₹300/month subscription" },
+    premium: { amount: 300000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
   };
 
   const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SvYaS0PYcUmgOF";
@@ -477,8 +479,8 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                       <span className="font-semibold text-pine-deep">{plan.name}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">First charge</span>
-                      <span className="font-semibold text-pine-deep">₹{plan.price} today</span>
+                      <span className="text-muted-foreground">Today's charge</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price * 30} (1 month)</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Then monthly</span>
@@ -505,7 +507,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Pay ₹${plan.price} & Activate Auto-Pay →`
+                      : `Pay ₹${plan.price * 30} & Activate Auto-Pay →`
                     }
                   </button>
                 </div>
@@ -544,7 +546,11 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                       <span className="font-semibold text-avocado">{plan.discount}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Monthly charge</span>
+                      <span className="text-muted-foreground">Today's charge</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price * 30} (1 month)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Monthly after</span>
                       <span className="font-semibold text-pine-deep">₹{plan.price * 30}/month</span>
                     </div>
                   </div>
@@ -560,7 +566,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Upgrade to ${plan.name} · Pay ₹${plan.price} →`
+                      : `Upgrade to ${plan.name} · Pay ₹${plan.price * 30} →`
                     }
                   </button>
 
@@ -620,10 +626,11 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                     </button>
                   )}
 
-                  <button onClick={close}
+                  <button
+                    onClick={() => { close(); setTimeout(() => navigate({ to: "/my-services" }), 100); }}
                     className="w-full rounded-full bg-hero text-cream font-semibold py-3 shadow-luxury hover:shadow-glow transition"
                   >
-                    Done
+                    Go to My Services →
                   </button>
                 </div>
               )}

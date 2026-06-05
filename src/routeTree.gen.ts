@@ -10,14 +10,23 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as PlansRouteImport } from './routes/plans'
+import { Route as MyServicesRouteImport } from './routes/my-services'
 import { Route as EarningsRouteImport } from './routes/earnings'
 import { Route as ContactRouteImport } from './routes/contact'
 import { Route as BenefitsRouteImport } from './routes/benefits'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ServicesCategoryRouteImport } from './routes/services.$category'
+import { Route as RequestCategoryServiceRouteImport } from './routes/request.$category.$service'
 
 const PlansRoute = PlansRouteImport.update({
   id: '/plans',
   path: '/plans',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MyServicesRoute = MyServicesRouteImport.update({
+  id: '/my-services',
+  path: '/my-services',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EarningsRoute = EarningsRouteImport.update({
@@ -35,48 +44,107 @@ const BenefitsRoute = BenefitsRouteImport.update({
   path: '/benefits',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ServicesCategoryRoute = ServicesCategoryRouteImport.update({
+  id: '/services/$category',
+  path: '/services/$category',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RequestCategoryServiceRoute = RequestCategoryServiceRouteImport.update({
+  id: '/request/$category/$service',
+  path: '/request/$category/$service',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/benefits': typeof BenefitsRoute
   '/contact': typeof ContactRoute
   '/earnings': typeof EarningsRoute
+  '/my-services': typeof MyServicesRoute
   '/plans': typeof PlansRoute
+  '/services/$category': typeof ServicesCategoryRoute
+  '/request/$category/$service': typeof RequestCategoryServiceRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/benefits': typeof BenefitsRoute
   '/contact': typeof ContactRoute
   '/earnings': typeof EarningsRoute
+  '/my-services': typeof MyServicesRoute
   '/plans': typeof PlansRoute
+  '/services/$category': typeof ServicesCategoryRoute
+  '/request/$category/$service': typeof RequestCategoryServiceRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/benefits': typeof BenefitsRoute
   '/contact': typeof ContactRoute
   '/earnings': typeof EarningsRoute
+  '/my-services': typeof MyServicesRoute
   '/plans': typeof PlansRoute
+  '/services/$category': typeof ServicesCategoryRoute
+  '/request/$category/$service': typeof RequestCategoryServiceRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/benefits' | '/contact' | '/earnings' | '/plans'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/benefits'
+    | '/contact'
+    | '/earnings'
+    | '/my-services'
+    | '/plans'
+    | '/services/$category'
+    | '/request/$category/$service'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/benefits' | '/contact' | '/earnings' | '/plans'
-  id: '__root__' | '/' | '/benefits' | '/contact' | '/earnings' | '/plans'
+  to:
+    | '/'
+    | '/admin'
+    | '/benefits'
+    | '/contact'
+    | '/earnings'
+    | '/my-services'
+    | '/plans'
+    | '/services/$category'
+    | '/request/$category/$service'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/benefits'
+    | '/contact'
+    | '/earnings'
+    | '/my-services'
+    | '/plans'
+    | '/services/$category'
+    | '/request/$category/$service'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
   BenefitsRoute: typeof BenefitsRoute
   ContactRoute: typeof ContactRoute
   EarningsRoute: typeof EarningsRoute
+  MyServicesRoute: typeof MyServicesRoute
   PlansRoute: typeof PlansRoute
+  ServicesCategoryRoute: typeof ServicesCategoryRoute
+  RequestCategoryServiceRoute: typeof RequestCategoryServiceRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -86,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/plans'
       fullPath: '/plans'
       preLoaderRoute: typeof PlansRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/my-services': {
+      id: '/my-services'
+      path: '/my-services'
+      fullPath: '/my-services'
+      preLoaderRoute: typeof MyServicesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/earnings': {
@@ -109,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BenefitsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -116,15 +198,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/services/$category': {
+      id: '/services/$category'
+      path: '/services/$category'
+      fullPath: '/services/$category'
+      preLoaderRoute: typeof ServicesCategoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/request/$category/$service': {
+      id: '/request/$category/$service'
+      path: '/request/$category/$service'
+      fullPath: '/request/$category/$service'
+      preLoaderRoute: typeof RequestCategoryServiceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
   BenefitsRoute: BenefitsRoute,
   ContactRoute: ContactRoute,
   EarningsRoute: EarningsRoute,
+  MyServicesRoute: MyServicesRoute,
   PlansRoute: PlansRoute,
+  ServicesCategoryRoute: ServicesCategoryRoute,
+  RequestCategoryServiceRoute: RequestCategoryServiceRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
