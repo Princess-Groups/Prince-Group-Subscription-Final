@@ -14,7 +14,11 @@ type ApiResponse<T = unknown> = {
 
 async function invoke<T = unknown>(route: string, body: Record<string, unknown>): Promise<ApiResponse<T>> {
   try {
-    const res = await fetch(`${WORKER_URL}/${route}`, {
+    // On Vercel the API lives at /api/<route>. When WORKER_URL is set (dev),
+    // it points directly to the local server (e.g. http://localhost:3001).
+    // When empty (production), prepend /api/ so it matches the serverless function.
+    const prefix = WORKER_URL ? "" : "/api";
+    const res = await fetch(`${WORKER_URL}${prefix}/${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
