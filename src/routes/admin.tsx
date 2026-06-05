@@ -1,8 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { SiteLayout } from "@/components/site/SiteLayout";
-import { api, type AdminData } from "@/lib/api";
-import { supabase } from "@/integrations/supabase/client";
+import type { AdminData } from "@/lib/api";
 import {
   Users,
   CreditCard,
@@ -81,49 +80,31 @@ function AdminPage() {
     }
 
     try {
-      // Try API route first (Vercel serverless or local server.mjs)
-      const res = await api.adminLogin({ username: username.trim(), password });
-      if (!res.error && res.data) {
-        // API returns flat { profiles, subscriptions, payments } wrapped by invoke()
-        const adminData = res.data;
-        if (adminData.profiles || adminData.subscriptions || adminData.payments) {
-          setData(adminData);
-          setLoggedIn(true);
-          const now = new Date().toLocaleString("en-IN");
-          setLastRefresh(now);
-          try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: adminData, lastRefresh: now })); } catch {}
-          setLoading(false);
-          return;
-        }
+      // Directly fetch /api/admin-login — this hits either the local server.mjs
+      // (via Vite proxy on port 3001) or the Vercel serverless function in production.
+      const raw = await fetch("/api/admin-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      if (!raw.ok) {
+        const errBody = await raw.json().catch(() => null);
+        throw new Error(errBody?.error || `HTTP ${raw.status}`);
       }
-      // API responded but with error or no data — fall through to client-side
-    } catch {
-      // API unavailable — fall back to client-side Supabase queries
-    }
-
-    // Fallback: query Supabase directly from the client
-    // (works with the anon key but limited to rows the user can see via RLS.
-    //  For full access, the API route with service_role key is needed.)
-    try {
-      const [profilesData, subsData, paysData] = await Promise.all([
-        supabase.from("profiles").select("*").order("created_at", { ascending: false }),
-        supabase.from("subscriptions").select("*, plans(name)").order("created_at", { ascending: false }),
-        supabase.from("payments").select("*").order("created_at", { ascending: false }),
-      ]);
-
-      const adminData = {
-        profiles: profilesData.data || [],
-        subscriptions: subsData.data || [],
-        payments: paysData.data || [],
-      };
-
-      setData(adminData);
-      setLoggedIn(true);
-      const now = new Date().toLocaleString("en-IN");
-      setLastRefresh(now);
-      try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: adminData, lastRefresh: now })); } catch {}
+      const result = await raw.json();
+      // API returns flat { profiles, subscriptions, payments }
+      if (result.profiles || result.subscriptions || result.payments) {
+        setData(result);
+        setLoggedIn(true);
+        const now = new Date().toLocaleString("en-IN");
+        setLastRefresh(now);
+        try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: result, lastRefresh: now })); } catch {}
+        setLoading(false);
+        return;
+      }
+      throw new Error("No data returned from API");
     } catch (err) {
-      setError((err as Error).message || "Failed to load data from Supabase. Make sure the API server is running locally.");
+      setError((err as Error).message || "Failed to load admin data. Check that the API server is reachable.");
     } finally {
       setLoading(false);
     }
@@ -143,33 +124,22 @@ function AdminPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.adminLogin({ username: "PrinceAdmin", password: "BeemBoy@123" });
-      if (!res.error && res.data) {
-        setData(res.data);
+      const raw = await fetch("/api/admin-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "PrinceAdmin", password: "BeemBoy@123" }),
+      });
+      if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
+      const result = await raw.json();
+      if (result.profiles || result.subscriptions || result.payments) {
+        setData(result);
         const now = new Date().toLocaleString("en-IN");
         setLastRefresh(now);
-        try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: res.data, lastRefresh: now })); } catch {}
+        try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: result, lastRefresh: now })); } catch {}
         setLoading(false);
         return;
       }
-    } catch {}
-
-    // Fallback: query Supabase client-side
-    try {
-      const [profilesData, subsData, paysData] = await Promise.all([
-        supabase.from("profiles").select("*").order("created_at", { ascending: false }),
-        supabase.from("subscriptions").select("*, plans(name)").order("created_at", { ascending: false }),
-        supabase.from("payments").select("*").order("created_at", { ascending: false }),
-      ]);
-      const refreshed = {
-        profiles: profilesData.data || [],
-        subscriptions: subsData.data || [],
-        payments: paysData.data || [],
-      };
-      setData(refreshed);
-      const now = new Date().toLocaleString("en-IN");
-      setLastRefresh(now);
-      try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ data: refreshed, lastRefresh: now })); } catch {}
+      throw new Error("No data returned");
     } catch (err) {
       setError((err as Error).message || "Refresh failed");
     } finally {
