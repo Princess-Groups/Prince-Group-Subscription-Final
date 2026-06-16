@@ -434,6 +434,8 @@ function SubscriptionsTable({ subscriptions }: { subscriptions: any[] }) {
       setCancelling(null);
     }
   };
+
+  const statusStyles: Record<string, string> = {
     active: "bg-avocado/10 text-avocado",
     created: "bg-blue-500/10 text-blue-600",
     authenticated: "bg-blue-500/10 text-blue-600",
