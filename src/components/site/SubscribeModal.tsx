@@ -286,7 +286,18 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
         modal: { ondismiss: () => setLoading(false) },
         handler: async (response: any) => {
           try {
-            // If upgrading, cancel old subscription first (only after payment succeeds)
+            // STEP 1: Verify Razorpay signature first (security check)
+            const { error: confirmErr } = await api.confirmRazorpayPayment({
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_subscription_id: response.razorpay_subscription_id,
+              razorpay_signature: response.razorpay_signature,
+            });
+            if (confirmErr) {
+              throw new Error("Payment verification failed: " + confirmErr.message);
+            }
+
+            // STEP 2: If upgrading, cancel old subscription first (only after payment succeeds)
             if (upgradeInFlightRef.current && subscription?.razorpay_subscription_id) {
               await api.cancelSubscription({
                 subscriptionId: subscription.id,
@@ -295,7 +306,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
               upgradeInFlightRef.current = false;
             }
 
-            // Save payment to DB via API worker (also sends email server-side)
+            // STEP 3: Save payment to DB via API worker (also sends email server-side)
             const { data: saveData, error: saveErr } = await api.savePayment({
               userId: user.id,
               planId,
@@ -311,10 +322,16 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
             if (saveErr) throw new Error(saveErr.message);
             const subId = saveData?.subscriptionId || response.razorpay_payment_id;
 
-            // Reload subscription record and show success
+            // STEP 4: Reload subscription record and show success
             setSubscription(null); // clear cached so loadSubscription fetches the new one
             await loadSubscription(user.id);
             setStep("success");
+
+            // STEP 5: Auto-redirect to services page after 2 seconds
+            setTimeout(() => {
+              close();
+              navigate({ to: "/my-services" });
+            }, 2000);
           } catch (err) {
             setError((err as Error).message || "Payment verification failed");
           } finally {

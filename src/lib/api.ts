@@ -95,9 +95,24 @@ export interface AdminData {
   payments: any[];
 }
 
+export interface ConfirmPaymentInput {
+  razorpay_payment_id: string;
+  razorpay_order_id?: string;
+  razorpay_subscription_id?: string;
+  razorpay_signature: string;
+}
+
+export interface ConfirmPaymentOutput {
+  success: boolean;
+  payment: any;
+}
+
 export const api = {
   savePayment: (input: SavePaymentInput) =>
     invoke<SavePaymentOutput>("save-payment", input as unknown as Record<string, unknown>),
+
+  confirmRazorpayPayment: (input: ConfirmPaymentInput) =>
+    invoke<ConfirmPaymentOutput>("confirm-razorpay-payment", input as unknown as Record<string, unknown>),
 
   createRazorpayOrder: (input: CreateOrderInput) =>
     invoke<CreateOrderOutput>("create-razorpay-order", input as unknown as Record<string, unknown>),

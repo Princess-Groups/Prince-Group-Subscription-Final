@@ -37,4 +37,15 @@ export default defineConfig({
       { path: "/admin", prerender: { enabled: true } },
     ],
   },
+  vite: {
+    server: {
+      proxy: {
+        // Proxy /api calls to local server.mjs for local testing
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+        },
+      },
+    },
+  },
 });
