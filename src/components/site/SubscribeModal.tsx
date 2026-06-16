@@ -634,15 +634,6 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                     A confirmation will be sent to your email. Welcome to Prince Groups!
                   </p>
 
-                  {subscription?.razorpay_subscription_id && (
-                    <button onClick={handleCancelSubscription} disabled={loading}
-                      className="w-full rounded-full border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive hover:text-white font-semibold py-2.5 transition disabled:opacity-60 flex items-center justify-center gap-2"
-                    >
-                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
-                      Cancel Auto-Pay
-                    </button>
-                  )}
-
                   <button
                     onClick={() => { close(); setTimeout(() => navigate({ to: "/my-services" }), 100); }}
                     className="w-full rounded-full bg-hero text-cream font-semibold py-3 shadow-luxury hover:shadow-glow transition"

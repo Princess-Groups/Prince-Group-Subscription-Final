@@ -413,7 +413,27 @@ function MembersTable({ profiles, subscriptions }: { profiles: any[]; subscripti
 
 // ── SUBSCRIPTIONS TABLE ─────────────────────────────────────────────────
 function SubscriptionsTable({ subscriptions }: { subscriptions: any[] }) {
-  const statusStyles: Record<string, string> = {
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  const handleCancelSubscription = async (subId: string, razorpaySub: string) => {
+    if (!window.confirm("Are you sure you want to cancel this subscription?")) return;
+    setCancelling(subId);
+    setCancelError(null);
+    try {
+      const { error } = await api.cancelSubscription({
+        subscriptionId: subId,
+        razorpaySubscriptionId: razorpaySub,
+      });
+      if (error) throw new Error(error.message);
+      // Refresh or update UI
+      window.location.reload();
+    } catch (err) {
+      setCancelError((err as Error).message);
+    } finally {
+      setCancelling(null);
+    }
+  };
     active: "bg-avocado/10 text-avocado",
     created: "bg-blue-500/10 text-blue-600",
     authenticated: "bg-blue-500/10 text-blue-600",
@@ -455,6 +475,7 @@ function SubscriptionsTable({ subscriptions }: { subscriptions: any[] }) {
                 <th className="px-5 py-4 font-semibold text-pine-deep">Charges</th>
                 <th className="px-5 py-4 font-semibold text-pine-deep">Next Charge</th>
                 <th className="px-5 py-4 font-semibold text-pine-deep">Created</th>
+                <th className="px-5 py-4 font-semibold text-pine-deep">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -475,6 +496,16 @@ function SubscriptionsTable({ subscriptions }: { subscriptions: any[] }) {
                   </td>
                   <td className="px-5 py-4 text-xs text-muted-foreground">
                     {new Date(s.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                  </td>
+                  <td className="px-5 py-4">
+                    <button
+                      onClick={() => handleCancelSubscription(s.id, s.razorpay_subscription_id)}
+                      disabled={cancelling === s.id}
+                      className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive hover:text-white px-3 py-1 text-xs font-semibold transition disabled:opacity-60"
+                    >
+                      {cancelling === s.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3" />}
+                      Cancel
+                    </button>
                   </td>
                 </tr>
               ))}
