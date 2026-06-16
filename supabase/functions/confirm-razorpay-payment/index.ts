@@ -78,10 +78,29 @@ export default async function (request: Request) {
       `https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpay_payment_id)}`,
       { headers: { Authorization: `Basic ${auth}` } },
     );
-    const paymentData = await paymentResponse.json();
 
-    if (!paymentResponse.ok || !["captured", "authorized"].includes(paymentData.status)) {
-      return new Response(JSON.stringify({ error: "Payment not captured yet" }), {
+    if (!paymentResponse.ok) {
+      const errorText = await paymentResponse.text();
+      console.error("Razorpay API error:", paymentResponse.status, errorText);
+      return new Response(JSON.stringify({ error: "Payment verification failed", details: errorText }), {
+        status: 402,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    let paymentData;
+    try {
+      paymentData = await paymentResponse.json();
+    } catch (jsonError) {
+      console.error("Failed to parse Razorpay response as JSON:", jsonError);
+      return new Response(JSON.stringify({ error: "Invalid response from Razorpay" }), {
+        status: 500,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!["captured", "authorized"].includes(paymentData.status)) {
+      return new Response(JSON.stringify({ error: "Payment not captured yet", status: paymentData.status }), {
         status: 402,
         headers: { ...CORS, "Content-Type": "application/json" },
       });

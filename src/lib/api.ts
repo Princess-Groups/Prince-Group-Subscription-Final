@@ -23,7 +23,15 @@ async function invoke<T = unknown>(route: string, body: Record<string, unknown>)
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+
+    let data: any;
+    try {
+      data = await res.json();
+    } catch (jsonErr) {
+      const errorMsg = !res.ok ? `HTTP ${res.status}` : "Invalid response format";
+      return { error: { message: errorMsg } };
+    }
+
     if (!res.ok) {
       return { error: { message: (data as any).error || `HTTP ${res.status}` } };
     }

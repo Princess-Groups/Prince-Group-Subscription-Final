@@ -220,10 +220,23 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
   const payRes = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpay_payment_id)}`, {
     headers: { Authorization: `Basic ${razorpayAuth}` },
   });
-  const payData: any = await payRes.json();
 
-  if (!payRes.ok || !["captured", "authorized"].includes(payData.status)) {
-    return res.status(402).json({ error: "Payment not captured yet" });
+  if (!payRes.ok) {
+    const errorText = await payRes.text();
+    console.error("Razorpay payment fetch error:", payRes.status, errorText);
+    return res.status(402).json({ error: "Payment verification failed", details: errorText });
+  }
+
+  let payData: any;
+  try {
+    payData = await payRes.json();
+  } catch (jsonErr) {
+    console.error("Failed to parse Razorpay payment response:", jsonErr);
+    return res.status(500).json({ error: "Invalid response from Razorpay" });
+  }
+
+  if (!["captured", "authorized"].includes(payData.status)) {
+    return res.status(402).json({ error: "Payment not captured yet", status: payData.status });
   }
 
   return res.status(200).json({ success: true, payment: payData });
