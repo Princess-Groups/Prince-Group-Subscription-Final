@@ -3,9 +3,16 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist/client",
   "framework": null,
+  "functions": {
+    "api/[route].ts": {
+      "maxDuration": 30
+    },
+    "api/admin-login.ts": {
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
     { "source": "/(.*\\.(?:js|css|map|png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|otf|json|txt|xml|mp4))", "destination": "/$1" },
-    { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
