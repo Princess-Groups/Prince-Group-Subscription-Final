@@ -400,10 +400,10 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                 {step === "upgrade" && "Upgrade your membership"}
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
-                {step === "auth" && `${plan.name} · ₹${plan.price}/day · Cancel anytime`}
-                {step === "pay" && `₹${plan.price}/day auto-pay via Razorpay. Cancel anytime.`}
+                {step === "auth" && `${plan.name} · ₹${plan.price * 30}/month · Cancel anytime`}
+                {step === "pay" && `₹${plan.price * 30}/month auto-pay via Razorpay. Cancel anytime.`}
                 {step === "success" && "Your auto-pay membership is now live."}
-                {step === "upgrade" && `Move from ${PLANS.find(p => p.id === subscription?.plan_id)?.name || "current"} to ${plan.name} · ₹${plan.price}/day`}
+                {step === "upgrade" && `Move from ${PLANS.find(p => p.id === subscription?.plan_id)?.name || "current"} to ${plan.name} · ₹${plan.price * 30}/month`}
               </p>
 
               {/* ── STEP 1: AUTH ── */}
@@ -511,7 +511,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   {/* Auto-pay badge */}
                   <div className="flex items-center justify-center gap-2 rounded-full bg-avocado/15 text-pine-deep px-4 py-2 text-sm font-semibold">
                     <RefreshCw className="h-4 w-4 text-pine" />
-                    Auto-Pay · ₹{plan.price}/day
+                    Auto-Pay · ₹{plan.price * 30}/month
                   </div>
 
                   {/* Billing summary */}
@@ -521,12 +521,12 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                       <span className="font-semibold text-pine-deep">{plan.name}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">First charge</span>
-                      <span className="font-semibold text-pine-deep">₹{plan.price} today</span>
+                      <span className="text-muted-foreground">Monthly charge</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price * 30}/month</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Then monthly</span>
-                      <span className="font-semibold text-pine-deep">₹{plan.price * 30}/month</span>
+                      <span className="text-muted-foreground">First charge today</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price * 30}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Discount</span>
@@ -549,7 +549,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Pay ₹${plan.price} & Activate Auto-Pay →`
+                      : `Pay ₹${plan.price * 30} & Activate Auto-Pay →`
                     }
                   </button>
                 </div>
@@ -577,7 +577,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                     <p className="text-xs font-bold uppercase tracking-widest text-gold mb-2">Upgrade To</p>
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-pine-deep text-lg">{plan.name}</span>
-                      <span className="text-sm font-bold text-gold">₹{plan.price}/day</span>
+                      <span className="text-sm font-bold text-gold">₹{plan.price * 30}/month</span>
                     </div>
                   </div>
 
@@ -604,7 +604,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Upgrade to ${plan.name} · Pay ₹${plan.price} →`
+                      : `Upgrade to ${plan.name} · Pay ₹${plan.price * 30} →`
                     }
                   </button>
 

@@ -10,34 +10,24 @@ type RouteHandler = (req: VercelRequest, res: VercelResponse) => Promise<void> |
 
 const env = (key: string): string => process.env[key] ?? "";
 
+function checkRequiredEnv(keys: string[]): string[] {
+  return keys.filter((k) => !process.env[k]);
+}
+
 // ────────────────────────────────────────────
 // SHARED PLAN CONFIG (single source of truth)
 // amounts in paise
+// Razorpay subscriptions charge the plan amount each billing cycle.
+// The plan amount is what the user pays upfront (monthly subscription).
 // ────────────────────────────────────────────
-const PLANS: Record<string, { firstMonthPaise: number; monthlyPaise: number; name: string; description: string }> = {
-  starter: { firstMonthPaise: 3000,  monthlyPaise: 3000,  name: "₹1 Plan",  description: "Starter – ₹30/month subscription" },
-  popular: { firstMonthPaise: 30000, monthlyPaise: 30000, name: "₹10 Plan", description: "Popular – ₹300/month subscription" },
-  premium: { firstMonthPaise: 300000, monthlyPaise: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
+const PLANS: Record<string, { amount: number; name: string; description: string }> = {
+  // ₹30/month (₹1/day branding)
+  starter: { amount: 3000,  name: "₹1 Plan",  description: "Starter – ₹30/month subscription" },
+  // ₹300/month (₹10/day branding)
+  popular: { amount: 30000, name: "₹10 Plan", description: "Popular – ₹300/month subscription" },
+  // ₹3000/month (₹100/day branding)
+  premium: { amount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
 };
-
-Object.assign(PLANS.starter, {
-  firstMonthPaise: 100,
-  monthlyPaise: 3000,
-  name: "INR 1 Plan",
-  description: "Starter - INR 30/month subscription",
-});
-Object.assign(PLANS.popular, {
-  firstMonthPaise: 1000,
-  monthlyPaise: 30000,
-  name: "INR 10 Plan",
-  description: "Popular - INR 300/month subscription",
-});
-Object.assign(PLANS.premium, {
-  firstMonthPaise: 10000,
-  monthlyPaise: 300000,
-  name: "INR 100 Plan",
-  description: "Premium - INR 3000/month subscription",
-});
 
 function setCors(res: VercelResponse, origin?: string) {
   const allowed = env("CORS_ORIGIN") || origin || "*";
@@ -82,7 +72,12 @@ const savePayment: RouteHandler = async (req, res) => {
   } = await readJson(req);
 
   if (!userId || !planId || !razorpayPaymentId || !amount) {
-    return res.status(400).json({ error: "Missing required fields" });
+    return res.status(400).json({ error: `Missing required fields. Got userId=${!!userId}, planId=${!!planId}, razorpayPaymentId=${!!razorpayPaymentId}, amount=${!!amount}` });
+  }
+
+  const missingEnv = checkRequiredEnv(["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]);
+  if (missingEnv.length) {
+    return res.status(500).json({ error: `Server config error — missing: ${missingEnv.join(", ")}` });
   }
 
   const headers = supabaseHeaders();
@@ -122,8 +117,8 @@ const savePayment: RouteHandler = async (req, res) => {
         body: JSON.stringify({
           id: planId,
           name: planNameForDb,
-          initial_amount: planConfig?.firstMonthPaise || amount || 0,
-          monthly_amount: planConfig?.monthlyPaise || amount || 0,
+          initial_amount: planConfig?.amount || amount || 0,
+          monthly_amount: planConfig?.amount || amount || 0,
           active: true,
         }),
       });
@@ -231,63 +226,71 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
   if (!planId) return res.status(400).json({ error: "Missing planId" });
 
   const plan = PLANS[planId as string];
-  if (!plan) return res.status(400).json({ error: "Invalid planId" });
+  if (!plan) return res.status(400).json({ error: `Invalid planId: "${planId}". Valid: starter, popular, premium` });
 
-  const razorpayKeySecret = env("RAZORPAY_KEY_SECRET");
-  if (!razorpayKeySecret) {
-    console.error("[create-razorpay-order] RAZORPAY_KEY_SECRET is not configured");
-    return res.status(500).json({ error: "Payment service not configured" });
+  const missing = checkRequiredEnv(["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]);
+  if (missing.length) {
+    console.error(`[create-razorpay-order] Missing env vars: ${missing.join(", ")}`);
+    return res.status(500).json({ error: `Server config error — missing: ${missing.join(", ")}. Go to Vercel → Settings → Environment Variables and add them.` });
   }
 
+  const razorpayKeySecret = env("RAZORPAY_KEY_SECRET");
   const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${razorpayKeySecret}`).toString("base64");
   const authHeader = { Authorization: `Basic ${razorpayAuth}`, "Content-Type": "application/json" };
 
-  // Search for existing Razorpay plan by notes.plan_id (reliable lookup)
+  // ── Find or create the Razorpay plan ──
   const searchRes = await fetch("https://api.razorpay.com/v1/plans?count=100", { headers: authHeader });
   const searchData: any = await searchRes.json();
+
+  // Look for existing plan by plan_id note
   let razorpayPlanId = (searchData.items || []).find(
     (p: any) => p.notes?.plan_id === planId && p.period === "monthly"
   )?.id;
 
-  // Fallback: match by name if notes lookup fails (legacy plans)
+  // Fallback: match by name
   if (!razorpayPlanId) {
     razorpayPlanId = (searchData.items || []).find(
       (p: any) => p.item?.name === plan.name && p.period === "monthly"
     )?.id;
   }
 
+  // Create the plan if it doesn't exist
   if (!razorpayPlanId) {
     const planRes = await fetch("https://api.razorpay.com/v1/plans", {
       method: "POST", headers: authHeader,
       body: JSON.stringify({
         period: "monthly", interval: 1,
-        item: { name: plan.name, description: plan.description, amount: plan.monthlyPaise, currency: "INR" },
+        item: { name: plan.name, description: plan.description, amount: plan.amount, currency: "INR" },
         notes: { plan_id: planId },
       }),
     });
     const planData: any = await planRes.json();
-    if (!planRes.ok || !planData.id) return res.status(500).json({ error: "Unable to create Razorpay plan" });
+    if (!planRes.ok || !planData.id) {
+      console.error("[create-razorpay-order] Failed to create Razorpay plan:", planData);
+      return res.status(500).json({ error: planData.error?.description || "Unable to create Razorpay plan" });
+    }
     razorpayPlanId = planData.id;
   }
 
+  // ── Create the Razorpay subscription ──
   const subRes = await fetch("https://api.razorpay.com/v1/subscriptions", {
     method: "POST", headers: authHeader,
     body: JSON.stringify({
       plan_id: razorpayPlanId, total_count: 120, quantity: 1, customer_notify: 1,
-      addons: [{ item: { name: "First charge", amount: plan.firstMonthPaise, currency: "INR" } }],
       notes: { plan_key: planId, plan_name: plan.name },
     }),
   });
   const subData: any = await subRes.json();
   if (!subRes.ok || !subData.id) {
-    return res.status(500).json({ error: subData.error?.description || "Unable to create subscription" });
+    console.error("[create-razorpay-order] Subscription creation failed:", JSON.stringify(subData));
+    return res.status(500).json({ error: subData.error?.description || "Unable to create Razorpay subscription" });
   }
 
   return res.status(200).json({
     keyId: env("RAZORPAY_KEY_ID"),
     subscriptionId: subData.id,
-    orderId: subData.id, // Razorpay subscriptions use subscription ID as order reference
-    amount: plan.firstMonthPaise,
+    orderId: subData.id,
+    amount: plan.amount,
     currency: "INR",
     planName: plan.name,
     description: plan.description,
@@ -310,7 +313,7 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
   const razorpaySecret = env("RAZORPAY_KEY_SECRET");
   if (!razorpaySecret) {
     console.error("[confirm-razorpay-payment] FATAL: RAZORPAY_KEY_SECRET is not configured");
-    return res.status(500).json({ error: "Payment verification service not configured — check RAZORPAY_KEY_SECRET" });
+    return res.status(500).json({ error: "Payment verification service not configured — RAZORPAY_KEY_SECRET is missing. Go to Vercel → Settings → Environment Variables." });
   }
 
   console.log(`[confirm-razorpay-payment] Verifying payment: ${razorpay_payment_id}`);
@@ -723,6 +726,33 @@ const adminLogin: RouteHandler = async (req, res) => {
 };
 
 // ────────────────────────────────────────────
+// HEALTH CHECK (GET /api/health)
+// ────────────────────────────────────────────
+const healthCheck: RouteHandler = async (_req, res) => {
+  const missing = checkRequiredEnv([
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+  ]);
+  const optional = checkRequiredEnv([
+    "SMTP_EMAIL",
+    "SMTP_PASSWORD",
+    "WHATSAPP_API_TOKEN",
+    "WHATSAPP_PHONE_ID",
+  ]);
+
+  return res.status(missing.length ? 503 : 200).json({
+    status: missing.length ? "MISSING_ENV_VARS" : "OK",
+    razorpay: !missing.includes("RAZORPAY_KEY_ID") && !missing.includes("RAZORPAY_KEY_SECRET"),
+    supabase: !missing.includes("SUPABASE_URL") && !missing.includes("SUPABASE_SERVICE_ROLE_KEY"),
+    missingRequired: missing,
+    missingOptional: optional,
+    plans: Object.keys(PLANS),
+  });
+};
+
+// ────────────────────────────────────────────
 // ROUTER
 // ────────────────────────────────────────────
 const routes: Record<string, RouteHandler> = {
@@ -733,11 +763,17 @@ const routes: Record<string, RouteHandler> = {
   "send-email": sendEmail,
   "razorpay-webhook": razorpayWebhook,
   "admin-login": adminLogin,
+  "health": healthCheck,
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
   if (req.method === "OPTIONS") return res.status(204).end();
+
+  // Health check supports GET and POST
+  if (req.method === "GET") {
+    return healthCheck(req, res);
+  }
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const rawPath = (req.query.route as string) || "";
