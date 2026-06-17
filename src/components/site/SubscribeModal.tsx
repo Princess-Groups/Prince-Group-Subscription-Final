@@ -237,14 +237,18 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
       document.body.appendChild(s);
     });
 
-  // Plan config — monthlyAmount is charged upfront (the full monthly fee)
-  const PLAN_CONFIG: Record<string, { amount: number; monthlyAmount: number; name: string; description: string }> = {
-    starter: { amount: 3000,   monthlyAmount: 3000,   name: "₹1 Plan",   description: "Starter – ₹30/month subscription" },
-    popular: { amount: 30000,  monthlyAmount: 30000,  name: "₹10 Plan",  description: "Popular – ₹300/month subscription" },
-    premium: { amount: 300000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
+  // Plan config — must match backend PLANS in api/[route].ts exactly
+  // amounts in paise (₹30 = 3000 paise, ₹300 = 30000, ₹3000 = 300000)
+  const PLAN_CONFIG: Record<string, { amount: number; name: string; description: string }> = {
+    starter: { amount: 3000,   name: "₹1 Plan",   description: "Starter – ₹30/month subscription" },
+    popular: { amount: 30000,  name: "₹10 Plan",  description: "Popular – ₹300/month subscription" },
+    premium: { amount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
   };
 
-  const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SvYaS0PYcUmgOF";
+  const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID;
+  if (!RAZORPAY_KEY_ID) {
+    console.error("VITE_RAZORPAY_KEY_ID is not set — payment will fail");
+  }
 
   const startPayment = async () => {
     if (!plan || !user || loading) return;
@@ -283,7 +287,12 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
           email: displayEmail,
         },
         theme: { color: "#0f766e" },
-        modal: { ondismiss: () => setLoading(false) },
+        modal: {
+          ondismiss: () => {
+            setLoading(false);
+            setError(null); // User closed the modal intentionally, don't show error
+          },
+        },
         handler: async (response: any) => {
           try {
             // STEP 1: Verify Razorpay signature first (security check)
@@ -298,29 +307,46 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
               throw new Error("Payment verification failed. Your payment was successful. Please contact support with your payment ID: " + response.razorpay_payment_id);
             }
 
-            // STEP 2: If upgrading, cancel old subscription first (only after payment succeeds)
+            // STEP 2: If upgrading, cancel old subscription (best-effort, don't block)
             if (upgradeInFlightRef.current && subscription?.razorpay_subscription_id) {
-              await api.cancelSubscription({
+              const { error: cancelErr } = await api.cancelSubscription({
                 subscriptionId: subscription.id,
                 razorpaySubscriptionId: subscription.razorpay_subscription_id,
               });
+              if (cancelErr) {
+                // Log but don't fail — new subscription is active, old one will auto-expire
+                console.error("Failed to cancel old subscription during upgrade:", cancelErr.message);
+              }
               upgradeInFlightRef.current = false;
             }
 
             // STEP 3: Save payment to DB via API worker (also sends email server-side)
-            const { data: saveData, error: saveErr } = await api.savePayment({
-              userId: user.id,
-              planId,
-              planName: plan.name,
-              razorpaySubscriptionId: response.razorpay_subscription_id || null,
-              razorpayOrderId: response.razorpay_order_id || null,
-              razorpayPaymentId: response.razorpay_payment_id,
-              amount: planConfig.amount,
-              username: displayName,
-              mobile: displayMobile,
-              email: displayEmail,
-            });
-            if (saveErr) throw new Error(saveErr.message);
+            // The backend has idempotency — safe to retry if network fails
+            let saveData = null;
+            let saveErr = null;
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const result = await api.savePayment({
+                userId: user.id,
+                planId,
+                planName: plan.name,
+                razorpaySubscriptionId: response.razorpay_subscription_id || null,
+                razorpayOrderId: response.razorpay_order_id || null,
+                razorpayPaymentId: response.razorpay_payment_id,
+                amount: planConfig.amount,
+                username: displayName,
+                mobile: displayMobile,
+                email: displayEmail,
+              });
+              saveData = result.data;
+              saveErr = result.error;
+              if (!saveErr) break;
+              // Wait 1s before retry
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            if (saveErr) {
+              // Payment was verified but DB save failed — tell user to contact support
+              throw new Error("Payment verified but we couldn't save your subscription. Your payment ID: " + response.razorpay_payment_id + ". Please contact support — we will fix this immediately.");
+            }
             const subId = saveData?.subscriptionId || response.razorpay_payment_id;
 
             // STEP 4: Reload subscription record and show success

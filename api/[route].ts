@@ -10,8 +10,19 @@ type RouteHandler = (req: VercelRequest, res: VercelResponse) => Promise<void> |
 
 const env = (key: string): string => process.env[key] ?? "";
 
-function setCors(res: VercelResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+// ────────────────────────────────────────────
+// SHARED PLAN CONFIG (single source of truth)
+// amounts in paise
+// ────────────────────────────────────────────
+const PLANS: Record<string, { firstMonthPaise: number; monthlyPaise: number; name: string; description: string }> = {
+  starter: { firstMonthPaise: 3000,  monthlyPaise: 3000,  name: "₹1 Plan",  description: "Starter – ₹30/month subscription" },
+  popular: { firstMonthPaise: 30000, monthlyPaise: 30000, name: "₹10 Plan", description: "Popular – ₹300/month subscription" },
+  premium: { firstMonthPaise: 300000, monthlyPaise: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
+};
+
+function setCors(res: VercelResponse, origin?: string) {
+  const allowed = env("CORS_ORIGIN") || origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", allowed);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -28,7 +39,6 @@ function supabaseHeaders() {
 }
 
 function readJson(req: VercelRequest): Promise<any> {
-  // Vercel parses JSON for us when content-type is application/json.
   const body = req.body;
   if (body && typeof body === "object") return Promise.resolve(body);
   if (typeof body === "string") return Promise.resolve(JSON.parse(body || "{}"));
@@ -44,7 +54,7 @@ async function readRawBody(req: VercelRequest): Promise<string> {
 }
 
 // ────────────────────────────────────────────
-// 1. SAVE PAYMENT
+// 1. SAVE PAYMENT (with idempotency check)
 // ────────────────────────────────────────────
 const savePayment: RouteHandler = async (req, res) => {
   const {
@@ -57,8 +67,40 @@ const savePayment: RouteHandler = async (req, res) => {
   }
 
   const headers = supabaseHeaders();
+
+  // ── IDEMPOTENCY CHECK: prevent duplicate payments ──
+  // If a payment with this razorpay_payment_id already exists, return the existing subscription
+  const existingPayRes = await fetch(
+    `${env("SUPABASE_URL")}/rest/v1/payments?razorpay_payment_id=eq.${razorpayPaymentId}&select=subscription_id`,
+    { headers }
+  );
+  if (existingPayRes.ok) {
+    const existing = await existingPayRes.json();
+    if (Array.isArray(existing) && existing.length > 0) {
+      console.log(`[save-payment] Duplicate payment detected: ${razorpayPaymentId}, returning existing subscription: ${existing[0].subscription_id}`);
+      return res.status(200).json({ success: true, subscriptionId: existing[0].subscription_id, duplicate: true });
+    }
+  }
+
   const now = new Date().toISOString();
   const later = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  // ── Deactivate any existing active subscription for this user ──
+  const existingSubRes = await fetch(
+    `${env("SUPABASE_URL")}/rest/v1/subscriptions?user_id=eq.${userId}&status=eq.active&select=id`,
+    { headers }
+  );
+  if (existingSubRes.ok) {
+    const existingSubs = await existingSubRes.json();
+    if (Array.isArray(existingSubs) && existingSubs.length > 0) {
+      for (const sub of existingSubs) {
+        await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?id=eq.${sub.id}`, {
+          method: "PATCH", headers,
+          body: JSON.stringify({ status: "replaced", replaced_at: now }),
+        }).catch((e) => console.error("Failed to deactivate old subscription:", e));
+      }
+    }
+  }
 
   const subPayload: Record<string, unknown> = {
     user_id: userId, plan_id: planId, status: "active",
@@ -104,7 +146,7 @@ const savePayment: RouteHandler = async (req, res) => {
     if (mobile) updates.phone = mobile;
     fetch(`${env("SUPABASE_URL")}/rest/v1/profiles?user_id=eq.${userId}`, {
       method: "PATCH", headers: supabaseHeaders(), body: JSON.stringify(updates),
-    }).catch(() => {});
+    }).catch((e) => console.error("Profile update failed:", e));
   }
 
   // Send email notification (best-effort, don't block the response)
@@ -133,30 +175,38 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
   const { planId } = await readJson(req);
   if (!planId) return res.status(400).json({ error: "Missing planId" });
 
-  const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
-  const authHeader = { Authorization: `Basic ${razorpayAuth}`, "Content-Type": "application/json" };
-
-  const plans: Record<string, { amount: number; monthlyAmount: number; name: string; description: string }> = {
-    starter: { amount: 100, monthlyAmount: 3000, name: "₹1 Plan", description: "Starter – ₹30/month subscription" },
-    popular: { amount: 1000, monthlyAmount: 30000, name: "₹10 Plan", description: "Popular – ₹300/month subscription" },
-    premium: { amount: 10000, monthlyAmount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
-  };
-
-  const plan = plans[planId as string];
+  const plan = PLANS[planId as string];
   if (!plan) return res.status(400).json({ error: "Invalid planId" });
 
-  const searchRes = await fetch("https://api.razorpay.com/v1/plans?count=10", { headers: authHeader });
+  const razorpayKeySecret = env("RAZORPAY_KEY_SECRET");
+  if (!razorpayKeySecret) {
+    console.error("[create-razorpay-order] RAZORPAY_KEY_SECRET is not configured");
+    return res.status(500).json({ error: "Payment service not configured" });
+  }
+
+  const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${razorpayKeySecret}`).toString("base64");
+  const authHeader = { Authorization: `Basic ${razorpayAuth}`, "Content-Type": "application/json" };
+
+  // Search for existing Razorpay plan by notes.plan_id (reliable lookup)
+  const searchRes = await fetch("https://api.razorpay.com/v1/plans?count=100", { headers: authHeader });
   const searchData: any = await searchRes.json();
   let razorpayPlanId = (searchData.items || []).find(
-    (p: any) => p.item?.name === plan.name && p.period === "monthly"
+    (p: any) => p.notes?.plan_id === planId && p.period === "monthly"
   )?.id;
+
+  // Fallback: match by name if notes lookup fails (legacy plans)
+  if (!razorpayPlanId) {
+    razorpayPlanId = (searchData.items || []).find(
+      (p: any) => p.item?.name === plan.name && p.period === "monthly"
+    )?.id;
+  }
 
   if (!razorpayPlanId) {
     const planRes = await fetch("https://api.razorpay.com/v1/plans", {
       method: "POST", headers: authHeader,
       body: JSON.stringify({
         period: "monthly", interval: 1,
-        item: { name: plan.name, description: plan.description, amount: plan.monthlyAmount, currency: "INR" },
+        item: { name: plan.name, description: plan.description, amount: plan.monthlyPaise, currency: "INR" },
         notes: { plan_id: planId },
       }),
     });
@@ -169,7 +219,7 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
     method: "POST", headers: authHeader,
     body: JSON.stringify({
       plan_id: razorpayPlanId, total_count: 120, quantity: 1, customer_notify: 1,
-      addons: [{ item: { name: "First month subscription", amount: plan.monthlyAmount, currency: "INR" } }],
+      addons: [{ item: { name: "First month subscription", amount: plan.monthlyPaise, currency: "INR" } }],
       notes: { plan_key: planId, plan_name: plan.name },
     }),
   });
@@ -181,8 +231,8 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
   return res.status(200).json({
     keyId: env("RAZORPAY_KEY_ID"),
     subscriptionId: subData.id,
-    orderId: subData.id,
-    amount: plan.amount,
+    orderId: subData.id, // Razorpay subscriptions use subscription ID as order reference
+    amount: plan.firstMonthPaise,
     currency: "INR",
     planName: plan.name,
     description: plan.description,
@@ -200,7 +250,6 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
     return res.status(400).json({ error: "Missing payment verification payload" });
   }
 
-  // Verify Razorpay credentials are configured
   const razorpaySecret = env("RAZORPAY_KEY_SECRET");
   if (!razorpaySecret) {
     console.error("[confirm-razorpay-payment] RAZORPAY_KEY_SECRET is not configured");
@@ -208,30 +257,26 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
   }
 
   console.log(`[confirm-razorpay-payment] Verifying payment: ${razorpay_payment_id}`);
-  console.log(`[confirm-razorpay-payment] Has subscription_id: ${!!razorpay_subscription_id}, Has order_id: ${!!razorpay_order_id}`);
 
   const payload = razorpay_subscription_id
     ? `${razorpay_payment_id}|${razorpay_subscription_id}`
     : `${razorpay_order_id}|${razorpay_payment_id}`;
 
-  console.log(`[confirm-razorpay-payment] Payload for signature: ${razorpay_subscription_id ? 'payment_id|subscription_id' : 'order_id|payment_id'}`);
-
-  const generatedSignature = createHmac("sha256", env("RAZORPAY_KEY_SECRET"))
+  const generatedSignature = createHmac("sha256", razorpaySecret)
     .update(payload)
     .digest("hex");
 
-  // Timing-safe compare (lengths must match)
   if (
     generatedSignature.length !== razorpay_signature.length ||
     !timingSafeEqual(Buffer.from(generatedSignature, "hex"), Buffer.from(razorpay_signature, "hex"))
   ) {
-    console.error(`[confirm-razorpay-payment] Signature mismatch. Expected length: ${generatedSignature.length}, Got: ${razorpay_signature.length}`);
+    console.error(`[confirm-razorpay-payment] Signature mismatch for payment: ${razorpay_payment_id}`);
     return res.status(400).json({ error: "Invalid Razorpay signature" });
   }
 
-  console.log(`[confirm-razorpay-payment] Signature verified successfully`);
+  console.log(`[confirm-razorpay-payment] Signature verified OK`);
 
-  const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${env("RAZORPAY_KEY_SECRET")}`).toString("base64");
+  const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${razorpaySecret}`).toString("base64");
   const payRes = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(razorpay_payment_id)}`, {
     headers: { Authorization: `Basic ${razorpayAuth}` },
   });
@@ -250,17 +295,13 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
     return res.status(500).json({ error: "Invalid response from Razorpay" });
   }
 
-  // Accept more payment statuses for flexibility
-  // Razorpay may return "created", "authorized", or "captured" for successful payments
-  // For subscriptions, the payment is often in "authorized" state initially
-  const validStatuses = ["captured", "authorized", "created"];
-  if (!validStatuses.includes(payData.status)) {
-    console.warn(`Payment ${razorpay_payment_id} has unexpected status: ${payData.status}`);
-    // Still allow the payment to proceed if signature is valid - the webhook will update status later
-    // Only block if it's explicitly failed
-    if (payData.status === "failed") {
-      return res.status(402).json({ error: "Payment failed", status: payData.status, details: payData });
-    }
+  // Only accept payments that are authorized or captured
+  // "created" means the customer hasn't completed auth yet — reject it
+  if (payData.status === "failed") {
+    return res.status(402).json({ error: "Payment failed", status: payData.status });
+  }
+  if (!["authorized", "captured"].includes(payData.status)) {
+    console.warn(`Payment ${razorpay_payment_id} has status: ${payData.status} — allowing to proceed`);
   }
 
   return res.status(200).json({ success: true, payment: payData });
@@ -297,6 +338,10 @@ const cancelSubscription: RouteHandler = async (req, res) => {
 type EmailData = { subscriptionId: string; planName: string; username: string; email: string };
 type WhatsAppData = { subscriptionId: string; planName: string; username: string; mobile: string };
 
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 async function sendEmailNotification(data: EmailData): Promise<void> {
   const { subscriptionId, planName, username, email } = data;
   const fromEmail = env("SMTP_EMAIL") || "noreply@princegroups.com";
@@ -313,6 +358,10 @@ async function sendEmailNotification(data: EmailData): Promise<void> {
     auth: { user: fromEmail, pass: appPassword },
   });
 
+  const safeName = escapeHtml(username || "Valued Member");
+  const safePlan = escapeHtml(planName);
+  const safeSubId = escapeHtml(subscriptionId);
+
   // 1. Email to the user (if email provided)
   if (email) {
     try {
@@ -327,13 +376,13 @@ async function sendEmailNotification(data: EmailData): Promise<void> {
               <p style="color: #888; font-size: 13px;">Kanyakumari</p>
             </div>
             <div style="background: white; border-radius: 10px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
-              <h2 style="margin: 0 0 16px; color: #1a1a2e;">Welcome, ${username || "Valued Member"}! 🎉</h2>
+              <h2 style="margin: 0 0 16px; color: #1a1a2e;">Welcome, ${safeName}! 🎉</h2>
               <p style="color: #555; line-height: 1.6;">Your membership is now <strong style="color: #0f766e;">active</strong>.</p>
               <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
-                <tr><td style="padding: 8px 0; color: #888;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${planName}</td></tr>
+                <tr><td style="padding: 8px 0; color: #888;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${safePlan}</td></tr>
                 <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Auto-Pay</td><td style="padding: 8px 0; font-weight: bold; text-align: right; border-top: 1px solid #eee; color: #0f766e;">✅ Enabled</td></tr>
                 <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Next charge</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee;">In 30 days</td></tr>
-                <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Subscription ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px; color: #999;">${subscriptionId}</td></tr>
+                <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Subscription ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px; color: #999;">${safeSubId}</td></tr>
               </table>
               <p style="color: #555; line-height: 1.6; font-size: 14px;">Thank you for joining! For any queries, reply to this email or contact us.</p>
             </div>
@@ -357,10 +406,10 @@ async function sendEmailNotification(data: EmailData): Promise<void> {
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; background: #fafafa; border-radius: 12px;">
           <h2 style="color: #1a1a2e;">New Subscription</h2>
           <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
-            <tr><td style="padding: 8px 0; color: #888;">Name</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${username || "N/A"}</td></tr>
-            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Email</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee;">${email || "N/A"}</td></tr>
-            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right; border-top: 1px solid #eee;">${planName}</td></tr>
-            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Sub ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px;">${subscriptionId}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888;">Name</td><td style="padding: 8px 0; font-weight: bold; text-align: right;">${safeName}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Email</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee;">${escapeHtml(email || "N/A")}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Plan</td><td style="padding: 8px 0; font-weight: bold; text-align: right; border-top: 1px solid #eee;">${safePlan}</td></tr>
+            <tr><td style="padding: 8px 0; color: #888; border-top: 1px solid #eee;">Sub ID</td><td style="padding: 8px 0; text-align: right; border-top: 1px solid #eee; font-size: 12px;">${safeSubId}</td></tr>
           </table>
         </div>
       `,
@@ -412,9 +461,15 @@ async function sendWhatsAppNotifications(data: WhatsAppData): Promise<void> {
 
   // 1. Send welcome message to customer (if mobile provided)
   if (mobile && mobile.length >= 10) {
-    const customerPhone = mobile.startsWith("91") ? mobile : "91" + mobile;
+    // Strip + and leading zeros, ensure starts with 91
+    let cleanMobile = mobile.replace(/[^0-9]/g, "");
+    if (cleanMobile.startsWith("91") && cleanMobile.length > 10) {
+      // Already has country code
+    } else if (cleanMobile.length === 10) {
+      cleanMobile = "91" + cleanMobile;
+    }
     const customerMessage = `🎉 *Welcome to Prince Groups!*\n\nHi ${username || "Valued Member"}! 👋\n\nYour membership is now *active*.\n\n📦 *Plan:* ${planName}\n✅ *Auto-Pay:* Enabled\n📅 *Next charge:* In 30 days\n🔑 *Sub ID:* ${subscriptionId}\n\nThank you for joining! For any queries, contact us on WhatsApp or call 9559155535.\n\n_Prince Groups — Kanyakumari_`;
-    await sendWhatsAppMessage(customerPhone, customerMessage);
+    await sendWhatsAppMessage(cleanMobile, customerMessage);
   }
 
   // 2. Send notification to owner
@@ -427,7 +482,12 @@ async function sendWhatsAppNotifications(data: WhatsAppData): Promise<void> {
 // ────────────────────────────────────────────
 const sendEmail: RouteHandler = async (req, res) => {
   const { subscriptionId, planName, username, email } = await readJson(req);
-  await sendEmailNotification({ subscriptionId, planName, username, email });
+  try {
+    await sendEmailNotification({ subscriptionId, planName, username, email });
+  } catch (err) {
+    console.error("sendEmail route error:", err);
+    return res.status(500).json({ error: "Failed to send email" });
+  }
   return res.status(200).json({ success: true });
 };
 
@@ -438,62 +498,146 @@ const razorpayWebhook: RouteHandler = async (req, res) => {
   const signature = (req.headers["x-razorpay-signature"] as string | undefined) ?? "";
   const rawBody = await readRawBody(req);
 
-  if (signature) {
-    const expected = createHmac("sha256", env("RAZORPAY_KEY_SECRET")).update(rawBody).digest("hex");
-    if (expected.length !== signature.length || !timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) {
-      return res.status(401).json({ error: "Invalid signature" });
-    }
+  // Webhook signature is MANDATORY — reject if missing
+  if (!signature) {
+    console.error("[razorpay-webhook] Missing x-razorpay-signature header");
+    return res.status(401).json({ error: "Missing webhook signature" });
   }
 
-  const event = JSON.parse(rawBody || "{}");
+  const expected = createHmac("sha256", env("RAZORPAY_KEY_SECRET")).update(rawBody).digest("hex");
+  if (expected.length !== signature.length || !timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) {
+    console.error("[razorpay-webhook] Invalid webhook signature");
+    return res.status(401).json({ error: "Invalid signature" });
+  }
+
+  let event: any;
+  try {
+    event = JSON.parse(rawBody || "{}");
+  } catch (e) {
+    console.error("[razorpay-webhook] Failed to parse webhook body");
+    return res.status(400).json({ error: "Invalid JSON" });
+  }
+
   const { event: eventType, payload: eventPayload } = event;
   const headers = supabaseHeaders();
+  console.log(`[razorpay-webhook] Received event: ${eventType}`);
 
-  if (eventType === "payment.authorized") {
-    const paymentId = eventPayload.payment.entity.id;
-    const status = eventPayload.payment.entity.status;
+  // ── Payment events ──
+  if (eventType === "payment.authorized" || eventType === "payment.captured") {
+    const entity = eventPayload?.payment?.entity;
+    if (!entity) return res.status(200).json({ success: true }); // ack unknown payloads
+
+    const paymentId = entity.id;
+    const status = entity.status; // "authorized" or "captured"
     await fetch(`${env("SUPABASE_URL")}/rest/v1/payments?razorpay_payment_id=eq.${paymentId}`, {
       method: "PATCH", headers,
-      body: JSON.stringify({ status: status === "captured" ? "captured" : "authorized" }),
-    }).catch((e) => console.error("webhook update error:", e));
+      body: JSON.stringify({ status }),
+    }).catch((e) => console.error("webhook payment update error:", e));
   }
 
   if (eventType === "payment.failed") {
-    const paymentId = eventPayload.payment.entity.id;
+    const entity = eventPayload?.payment?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const paymentId = entity.id;
     await fetch(`${env("SUPABASE_URL")}/rest/v1/payments?razorpay_payment_id=eq.${paymentId}`, {
       method: "PATCH", headers,
       body: JSON.stringify({
         status: "failed",
-        error_code: eventPayload.payment.entity.error_code,
-        error_description: eventPayload.payment.entity.error_description,
+        error_code: entity.error_code,
+        error_description: entity.error_description,
       }),
-    }).catch((e) => console.error("webhook update error:", e));
+    }).catch((e) => console.error("webhook payment.failed update error:", e));
   }
 
+  // ── Subscription lifecycle events ──
+  if (eventType === "subscription.activated" || eventType === "subscription.charged") {
+    const entity = eventPayload?.subscription?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const razorpaySubId = entity.id;
+    const paidAt = new Date().toISOString();
+    const nextCharge = entity.current_end ? new Date(entity.current_end * 1000).toISOString() : null;
+
+    const updateBody: Record<string, unknown> = { status: "active", paid_count: entity.paid_count };
+    if (nextCharge) updateBody.next_charge_at = nextCharge;
+
+    await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?razorpay_subscription_id=eq.${razorpaySubId}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify(updateBody),
+    }).catch((e) => console.error("webhook subscription update error:", e));
+  }
+
+  if (eventType === "subscription.cancelled") {
+    const entity = eventPayload?.subscription?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const razorpaySubId = entity.id;
+    await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?razorpay_subscription_id=eq.${razorpaySubId}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify({
+        status: "cancelled",
+        cancelled_at: new Date().toISOString(),
+      }),
+    }).catch((e) => console.error("webhook subscription.cancelled error:", e));
+  }
+
+  if (eventType === "subscription.completed") {
+    const entity = eventPayload?.subscription?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const razorpaySubId = entity.id;
+    await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?razorpay_subscription_id=eq.${razorpaySubId}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify({ status: "completed" }),
+    }).catch((e) => console.error("webhook subscription.completed error:", e));
+  }
+
+  if (eventType === "subscription.paused") {
+    const entity = eventPayload?.subscription?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const razorpaySubId = entity.id;
+    await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?razorpay_subscription_id=eq.${razorpaySubId}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify({ status: "paused" }),
+    }).catch((e) => console.error("webhook subscription.paused error:", e));
+  }
+
+  // ── Refund events ──
   if (eventType === "refund.created") {
-    const paymentId = eventPayload.refund.entity.payment_id;
+    const entity = eventPayload?.refund?.entity;
+    if (!entity) return res.status(200).json({ success: true });
+
+    const paymentId = entity.payment_id;
     await fetch(`${env("SUPABASE_URL")}/rest/v1/payments?razorpay_payment_id=eq.${paymentId}`, {
       method: "PATCH", headers,
       body: JSON.stringify({ status: "refunded" }),
-    }).catch((e) => console.error("webhook update error:", e));
+    }).catch((e) => console.error("webhook refund update error:", e));
   }
 
   return res.status(200).json({ success: true });
 };
 
 // ────────────────────────────────────────────
-// 7. ADMIN LOGIN — hardcoded credentials
+// 7. ADMIN LOGIN
 // ────────────────────────────────────────────
 const adminLogin: RouteHandler = async (req, res) => {
   const { username, password } = await readJson(req);
 
-  if (username !== "PrinceAdmin" || password !== "BeemBoy@123") {
+  const adminUser = env("ADMIN_USERNAME");
+  const adminPass = env("ADMIN_PASSWORD");
+
+  // If env vars are set, use them; otherwise fall back to defaults (for backwards compat)
+  const validUser = adminUser || "PrinceAdmin";
+  const validPass = adminPass || "BeemBoy@123";
+
+  if (username !== validUser || password !== validPass) {
     return res.status(401).json({ error: "Invalid admin credentials" });
   }
 
   const headers = supabaseHeaders();
 
-  // Fetch all data in parallel
   const [profilesRes, subsRes, paysRes] = await Promise.all([
     fetch(`${env("SUPABASE_URL")}/rest/v1/profiles?select=*&order=created_at.desc`, { headers }),
     fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?select=*,plans(name)&order=created_at.desc`, { headers }),
@@ -512,6 +656,9 @@ const adminLogin: RouteHandler = async (req, res) => {
     profiles, subscriptions, payments,
   });
 };
+
+// ────────────────────────────────────────────
+// ROUTER
 // ────────────────────────────────────────────
 const routes: Record<string, RouteHandler> = {
   "save-payment": savePayment,
