@@ -69,13 +69,10 @@ create table public.plans (
 );
 alter table public.plans enable row level security;
 
--- Seed the 3 plans
-insert into public.plans (id, name, initial_amount, monthly_amount) values
-  ('starter', '₹1 Plan',   100,    3000),    -- ₹1 today, ₹30/month
-  ('popular', '₹10 Plan',  1000,   30000),   -- ₹10 today, ₹300/month
-  ('premium', '₹100 Plan', 10000,  300000);  -- ₹100 today, ₹3000/month
--- If plans already exist, skip duplicates
-on conflict (id) do nothing;
+-- Seed the 3 plans (skip if already exist)
+insert into public.plans (id, name, initial_amount, monthly_amount) values ('starter', '₹1 Plan', 100, 3000) on conflict (id) do nothing;
+insert into public.plans (id, name, initial_amount, monthly_amount) values ('popular', '₹10 Plan', 1000, 30000) on conflict (id) do nothing;
+insert into public.plans (id, name, initial_amount, monthly_amount) values ('premium', '₹100 Plan', 10000, 300000) on conflict (id) do nothing;
 
 -- ============ SUBSCRIPTIONS ============
 DROP TABLE IF EXISTS public.subscriptions CASCADE;
