@@ -270,7 +270,10 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
     try {
       await loadRazorpay();
 
-      const { data: orderData, error: orderErr } = await api.createRazorpayOrder({ planId: planId! });
+      const { data: orderData, error: orderErr } = await api.createRazorpayOrder({
+        planId: planId!,
+        razorpayKeyId: import.meta.env.VITE_RAZORPAY_KEY_ID,
+      });
       if (orderErr || !orderData?.subscriptionId) {
         throw new Error(orderErr?.message || "Unable to start auto-pay subscription");
       }

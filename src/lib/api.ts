@@ -78,6 +78,7 @@ export interface SendEmailInput {
 
 export interface CreateOrderInput {
   planId: string;
+  razorpayKeyId?: string;
 }
 
 export interface CreateOrderOutput {

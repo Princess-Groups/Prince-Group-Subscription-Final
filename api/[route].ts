@@ -222,20 +222,27 @@ const savePayment: RouteHandler = async (req, res) => {
 // 2. CREATE RAZORPAY ORDER
 // ────────────────────────────────────────────
 const createRazorpayOrder: RouteHandler = async (req, res) => {
-  const { planId } = await readJson(req);
+  const { planId, razorpayKeyId: clientKeyId } = await readJson(req);
   if (!planId) return res.status(400).json({ error: "Missing planId" });
 
   const plan = PLANS[planId as string];
   if (!plan) return res.status(400).json({ error: `Invalid planId: "${planId}". Valid: starter, popular, premium` });
 
-  const missing = checkRequiredEnv(["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]);
-  if (missing.length) {
-    console.error(`[create-razorpay-order] Missing env vars: ${missing.join(", ")}`);
-    return res.status(500).json({ error: `Server config error — missing: ${missing.join(", ")}. Go to Vercel → Settings → Environment Variables and add them.` });
+  // RAZORPAY_KEY_SECRET is always required server-side
+  // RAZORPAY_KEY_ID can fall back to the client-provided value (it's a public key)
+  const razorpayKeySecret = env("RAZORPAY_KEY_SECRET");
+  const razorpayKeyId = env("RAZORPAY_KEY_ID") || clientKeyId || "";
+
+  if (!razorpayKeySecret) {
+    console.error("[create-razorpay-order] RAZORPAY_KEY_SECRET is not set in Vercel env vars");
+    return res.status(500).json({ error: "Payment service not configured — RAZORPAY_KEY_SECRET is missing. Add it in Vercel → Settings → Environment Variables and redeploy." });
+  }
+  if (!razorpayKeyId) {
+    console.error("[create-razorpay-order] RAZORPAY_KEY_ID is not set (env or client)");
+    return res.status(500).json({ error: "Payment service not configured — RAZORPAY_KEY_ID is missing." });
   }
 
-  const razorpayKeySecret = env("RAZORPAY_KEY_SECRET");
-  const razorpayAuth = Buffer.from(`${env("RAZORPAY_KEY_ID")}:${razorpayKeySecret}`).toString("base64");
+  const razorpayAuth = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
   const authHeader = { Authorization: `Basic ${razorpayAuth}`, "Content-Type": "application/json" };
 
   // ── Find or create the Razorpay plan ──
@@ -742,12 +749,21 @@ const healthCheck: RouteHandler = async (_req, res) => {
     "WHATSAPP_PHONE_ID",
   ]);
 
+  // Check if user accidentally added VITE_ prefixed vars (browser-only, not available server-side)
+  const viteMistakes: string[] = [];
+  for (const key of ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]) {
+    if (!process.env[key] && process.env[`VITE_${key}`]) {
+      viteMistakes.push(key);
+    }
+  }
+
   return res.status(missing.length ? 503 : 200).json({
     status: missing.length ? "MISSING_ENV_VARS" : "OK",
     razorpay: !missing.includes("RAZORPAY_KEY_ID") && !missing.includes("RAZORPAY_KEY_SECRET"),
     supabase: !missing.includes("SUPABASE_URL") && !missing.includes("SUPABASE_SERVICE_ROLE_KEY"),
     missingRequired: missing,
     missingOptional: optional,
+    vitePrefixMistakes: viteMistakes.length ? `These vars have VITE_ prefix (browser-only). Add them WITHOUT VITE_ prefix: ${viteMistakes.join(", ")}` : null,
     plans: Object.keys(PLANS),
   });
 };
