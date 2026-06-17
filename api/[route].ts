@@ -736,8 +736,10 @@ const adminLogin: RouteHandler = async (req, res) => {
 // HEALTH CHECK (GET /api/health)
 // ────────────────────────────────────────────
 const healthCheck: RouteHandler = async (_req, res) => {
+  // Only RAZORPAY_KEY_SECRET is strictly required on the server
+  // RAZORPAY_KEY_ID is sent by the frontend (it's a public key)
+  // SUPABASE vars are checked but the service role key is needed for DB writes
   const missing = checkRequiredEnv([
-    "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
     "SUPABASE_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
@@ -757,13 +759,17 @@ const healthCheck: RouteHandler = async (_req, res) => {
     }
   }
 
+  const hasRazorpay = !!env("RAZORPAY_KEY_SECRET");
+  const hasSupabase = !!env("SUPABASE_URL") && !!env("SUPABASE_SERVICE_ROLE_KEY");
+
   return res.status(missing.length ? 503 : 200).json({
     status: missing.length ? "MISSING_ENV_VARS" : "OK",
-    razorpay: !missing.includes("RAZORPAY_KEY_ID") && !missing.includes("RAZORPAY_KEY_SECRET"),
-    supabase: !missing.includes("SUPABASE_URL") && !missing.includes("SUPABASE_SERVICE_ROLE_KEY"),
+    razorpay: hasRazorpay,
+    supabase: hasSupabase,
     missingRequired: missing,
     missingOptional: optional,
-    vitePrefixMistakes: viteMistakes.length ? `These vars have VITE_ prefix (browser-only). Add them WITHOUT VITE_ prefix: ${viteMistakes.join(", ")}` : null,
+    vitePrefixMistakes: viteMistakes.length ? `You added these with VITE_ prefix — that's browser-only! Delete the VITE_ version and add WITHOUT prefix: ${viteMistakes.join(", ")}` : null,
+    help: missing.length ? "Go to vercel.com → your project → Settings → Environment Variables → add these to PRODUCTION scope → then go to Deployments → click ⋯ on latest → Redeploy" : null,
     plans: Object.keys(PLANS),
   });
 };
