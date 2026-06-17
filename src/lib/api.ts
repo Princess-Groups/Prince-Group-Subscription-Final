@@ -16,7 +16,6 @@ async function invoke<T = unknown>(route: string, body: Record<string, unknown>)
   try {
     // On Vercel the API lives at /api/<route>. When WORKER_URL is set (dev),
     // it points directly to the local server (e.g. http://localhost:3001).
-    // When empty (production), prepend /api/ so it matches the serverless function.
     const prefix = WORKER_URL ? "" : "/api";
     const res = await fetch(`${WORKER_URL}${prefix}/${route}`, {
       method: "POST",
@@ -119,11 +118,11 @@ export const api = {
   savePayment: (input: SavePaymentInput) =>
     invoke<SavePaymentOutput>("save-payment", input as unknown as Record<string, unknown>),
 
-  confirmRazorpayPayment: (input: ConfirmPaymentInput) =>
-    invoke<ConfirmPaymentOutput>("confirm-razorpay-payment", input as unknown as Record<string, unknown>),
-
   createRazorpayOrder: (input: CreateOrderInput) =>
     invoke<CreateOrderOutput>("create-razorpay-order", input as unknown as Record<string, unknown>),
+
+  confirmRazorpayPayment: (input: ConfirmPaymentInput) =>
+    invoke<ConfirmPaymentOutput>("confirm-razorpay-payment", input as unknown as Record<string, unknown>),
 
   cancelSubscription: (input: CancelSubscriptionInput) =>
     invoke<CancelSubscriptionOutput>("cancel-subscription", input as unknown as Record<string, unknown>),

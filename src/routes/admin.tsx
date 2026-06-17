@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { SiteLayout } from "@/components/site/SiteLayout";
-import type { AdminData } from "@/lib/api";
+import { api, type AdminData } from "@/lib/api";
 import {
   Users,
   CreditCard,

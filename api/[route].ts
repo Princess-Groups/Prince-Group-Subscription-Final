@@ -20,6 +20,25 @@ const PLANS: Record<string, { firstMonthPaise: number; monthlyPaise: number; nam
   premium: { firstMonthPaise: 300000, monthlyPaise: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
 };
 
+Object.assign(PLANS.starter, {
+  firstMonthPaise: 100,
+  monthlyPaise: 3000,
+  name: "INR 1 Plan",
+  description: "Starter - INR 30/month subscription",
+});
+Object.assign(PLANS.popular, {
+  firstMonthPaise: 1000,
+  monthlyPaise: 30000,
+  name: "INR 10 Plan",
+  description: "Popular - INR 300/month subscription",
+});
+Object.assign(PLANS.premium, {
+  firstMonthPaise: 10000,
+  monthlyPaise: 300000,
+  name: "INR 100 Plan",
+  description: "Premium - INR 3000/month subscription",
+});
+
 function setCors(res: VercelResponse, origin?: string) {
   const allowed = env("CORS_ORIGIN") || origin || "*";
   res.setHeader("Access-Control-Allow-Origin", allowed);
@@ -82,6 +101,41 @@ const savePayment: RouteHandler = async (req, res) => {
     }
   }
 
+  // ── Ensure plan exists in plans table (upsert to prevent FK violation) ──
+  const planConfig = PLANS[planId as string];
+  const planNameForDb = planConfig?.name || planName || planId;
+  const planDescription = planConfig?.description || `${planNameForDb} subscription`;
+
+  // Check if plan row exists
+  const existingPlanRes = await fetch(
+    `${env("SUPABASE_URL")}/rest/v1/plans?id=eq.${planId}&select=id`,
+    { headers }
+  );
+  if (existingPlanRes.ok) {
+    const existingPlans = await existingPlanRes.json();
+    if (!Array.isArray(existingPlans) || existingPlans.length === 0) {
+      // Plan doesn't exist — create it
+      console.log(`[save-payment] Plan "${planId}" not found in plans table, creating it`);
+      const createPlanRes = await fetch(`${env("SUPABASE_URL")}/rest/v1/plans`, {
+        method: "POST",
+        headers: { ...headers, Prefer: "return=representation" },
+        body: JSON.stringify({
+          id: planId,
+          name: planNameForDb,
+          initial_amount: planConfig?.firstMonthPaise || amount || 0,
+          monthly_amount: planConfig?.monthlyPaise || amount || 0,
+          active: true,
+        }),
+      });
+      if (!createPlanRes.ok) {
+        console.error("[save-payment] Failed to create plan:", await createPlanRes.text());
+        // Continue anyway — the FK might not exist or might be deferred
+      } else {
+        console.log(`[save-payment] Created plan "${planId}" in plans table`);
+      }
+    }
+  }
+
   const now = new Date().toISOString();
   const later = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -96,7 +150,7 @@ const savePayment: RouteHandler = async (req, res) => {
       for (const sub of existingSubs) {
         await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?id=eq.${sub.id}`, {
           method: "PATCH", headers,
-          body: JSON.stringify({ status: "replaced", replaced_at: now }),
+          body: JSON.stringify({ status: "cancelled", cancelled_at: now }),
         }).catch((e) => console.error("Failed to deactivate old subscription:", e));
       }
     }
@@ -115,13 +169,14 @@ const savePayment: RouteHandler = async (req, res) => {
   });
 
   if (!subRes.ok) {
-    console.error("sub insert failed:", await subRes.text());
-    return res.status(500).json({ error: "Unable to create subscription" });
+    const subError = await subRes.text();
+    console.error("[save-payment] Subscription insert failed:", subRes.status, subError);
+    return res.status(500).json({ error: `Unable to create subscription: ${subError}` });
   }
 
   const subData = await subRes.json();
   const subId = Array.isArray(subData) ? subData[0]?.id : subData?.id;
-  if (!subId) return res.status(500).json({ error: "Unable to create subscription (no id)" });
+  if (!subId) return res.status(500).json({ error: "Unable to create subscription (no id returned)" });
 
   const payRes = await fetch(`${env("SUPABASE_URL")}/rest/v1/payments`, {
     method: "POST",
@@ -219,7 +274,7 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
     method: "POST", headers: authHeader,
     body: JSON.stringify({
       plan_id: razorpayPlanId, total_count: 120, quantity: 1, customer_notify: 1,
-      addons: [{ item: { name: "First month subscription", amount: plan.monthlyPaise, currency: "INR" } }],
+      addons: [{ item: { name: "First charge", amount: plan.firstMonthPaise, currency: "INR" } }],
       notes: { plan_key: planId, plan_name: plan.name },
     }),
   });
@@ -246,21 +301,28 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
 const confirmRazorpayPayment: RouteHandler = async (req, res) => {
   const { razorpay_payment_id, razorpay_order_id, razorpay_subscription_id, razorpay_signature } = await readJson(req);
 
+  console.log(`[confirm-razorpay-payment] Received: payment_id=${razorpay_payment_id}, order_id=${razorpay_order_id}, subscription_id=${razorpay_subscription_id}, has_signature=${!!razorpay_signature}`);
+
   if (!razorpay_payment_id || !razorpay_signature) {
     return res.status(400).json({ error: "Missing payment verification payload" });
   }
 
   const razorpaySecret = env("RAZORPAY_KEY_SECRET");
   if (!razorpaySecret) {
-    console.error("[confirm-razorpay-payment] RAZORPAY_KEY_SECRET is not configured");
-    return res.status(500).json({ error: "Payment verification service not configured" });
+    console.error("[confirm-razorpay-payment] FATAL: RAZORPAY_KEY_SECRET is not configured");
+    return res.status(500).json({ error: "Payment verification service not configured — check RAZORPAY_KEY_SECRET" });
   }
 
   console.log(`[confirm-razorpay-payment] Verifying payment: ${razorpay_payment_id}`);
 
+  // Build the payload for signature verification
+  // For subscription payments: payment_id|subscription_id
+  // For one-time payments: order_id|payment_id
   const payload = razorpay_subscription_id
     ? `${razorpay_payment_id}|${razorpay_subscription_id}`
     : `${razorpay_order_id}|${razorpay_payment_id}`;
+
+  console.log(`[confirm-razorpay-payment] Signature payload: ${razorpay_subscription_id ? 'payment_id|subscription_id' : 'order_id|payment_id'}`);
 
   const generatedSignature = createHmac("sha256", razorpaySecret)
     .update(payload)
@@ -271,7 +333,8 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
     !timingSafeEqual(Buffer.from(generatedSignature, "hex"), Buffer.from(razorpay_signature, "hex"))
   ) {
     console.error(`[confirm-razorpay-payment] Signature mismatch for payment: ${razorpay_payment_id}`);
-    return res.status(400).json({ error: "Invalid Razorpay signature" });
+    console.error(`[confirm-razorpay-payment] Expected length: ${generatedSignature.length}, got: ${razorpay_signature.length}`);
+    return res.status(400).json({ error: "Invalid Razorpay signature — payment may still be valid, contact support" });
   }
 
   console.log(`[confirm-razorpay-payment] Signature verified OK`);
@@ -283,25 +346,27 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
 
   if (!payRes.ok) {
     const errorText = await payRes.text();
-    console.error("Razorpay payment fetch error:", payRes.status, errorText);
-    return res.status(402).json({ error: "Payment verification failed", details: errorText });
+    console.error("[confirm-razorpay-payment] Razorpay payment fetch error:", payRes.status, errorText);
+    return res.status(402).json({ error: "Payment verification failed — could not fetch payment from Razorpay", details: errorText });
   }
 
   let payData: any;
   try {
     payData = await payRes.json();
   } catch (jsonErr) {
-    console.error("Failed to parse Razorpay payment response:", jsonErr);
+    console.error("[confirm-razorpay-payment] Failed to parse Razorpay payment response:", jsonErr);
     return res.status(500).json({ error: "Invalid response from Razorpay" });
   }
+
+  console.log(`[confirm-razorpay-payment] Payment status: ${payData.status}`);
 
   // Only accept payments that are authorized or captured
   // "created" means the customer hasn't completed auth yet — reject it
   if (payData.status === "failed") {
-    return res.status(402).json({ error: "Payment failed", status: payData.status });
+    return res.status(402).json({ error: "Payment failed on Razorpay", status: payData.status });
   }
   if (!["authorized", "captured"].includes(payData.status)) {
-    console.warn(`Payment ${razorpay_payment_id} has status: ${payData.status} — allowing to proceed`);
+    console.warn(`[confirm-razorpay-payment] Payment ${razorpay_payment_id} has unexpected status: ${payData.status} — allowing to proceed`);
   }
 
   return res.status(200).json({ success: true, payment: payData });

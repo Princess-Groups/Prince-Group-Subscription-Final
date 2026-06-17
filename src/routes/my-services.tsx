@@ -47,18 +47,40 @@ function MyServicesPage() {
     // Load subscription from Supabase
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) return;
-      const { data: sub } = await supabase
+
+      // Try with plans join first
+      const { data: subWithPlan, error: joinErr } = await supabase
         .from("subscriptions")
         .select("*, plans(*)")
         .eq("user_id", user.id)
         .eq("status", "active")
         .maybeSingle();
-      if (sub) {
+
+      if (subWithPlan) {
         setMembership({
-          plan: sub.plans?.name || "Active Member",
+          plan: subWithPlan.plans?.name || "Active Member",
           username: user.user_metadata?.full_name || user.email?.split("@")[0] || "",
           mobile: user.user_metadata?.phone || "",
         });
+        return;
+      }
+
+      // Fallback: if join fails, try without join
+      if (joinErr) {
+        console.warn("[my-services] Subscription query with plans join failed, trying without:", joinErr.message);
+        const { data: subOnly } = await supabase
+          .from("subscriptions")
+          .select("*")
+          .eq("user_id", user.id)
+          .eq("status", "active")
+          .maybeSingle();
+        if (subOnly) {
+          setMembership({
+            plan: subOnly.plan_id || "Active Member",
+            username: user.user_metadata?.full_name || user.email?.split("@")[0] || "",
+            mobile: user.user_metadata?.phone || "",
+          });
+        }
       }
     });
 

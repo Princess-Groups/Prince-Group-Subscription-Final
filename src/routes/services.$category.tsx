@@ -66,7 +66,7 @@ function CategoryPage() {
         <div className="absolute -top-24 -left-16 h-80 w-80 rounded-full bg-cream/15 blur-3xl animate-float" />
         <div className="absolute -bottom-24 -right-16 h-80 w-80 rounded-full bg-avocado/25 blur-3xl animate-float" style={{ animationDelay: "2s" }} />
         <div className="relative container mx-auto px-4 py-20 md:py-24">
-          <Link to="/my-services" className="inline-flex items-center gap-2 text-cream/90 hover:text-cream text-sm">
+          <Link to="/my-services" search={{ from: undefined }} className="inline-flex items-center gap-2 text-cream/90 hover:text-cream text-sm">
             <ArrowLeft className="h-4 w-4" /> Back to services
           </Link>
           <div className="mt-8 max-w-3xl">

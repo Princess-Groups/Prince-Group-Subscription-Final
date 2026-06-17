@@ -35,10 +35,10 @@ type Subscription = {
   id: string;
   plan_id: string;
   status: string;
-  razorpay_subscription_id: string;
-  current_start: string;
-  current_end: string;
-  next_charge_at: string;
+  razorpay_subscription_id: string | null;
+  current_start: string | null;
+  current_end: string | null;
+  next_charge_at: string | null;
   paid_count: number;
 };
 
@@ -105,13 +105,28 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
   }, [subscription, planId, step]);
 
   const loadSubscription = async (userId: string) => {
-    const { data } = await supabase
-      .from("subscriptions")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("status", "active")
-      .maybeSingle();
-    if (data) setSubscription(data);
+    try {
+      const { data, error } = await supabase
+        .from("subscriptions")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .maybeSingle();
+      if (error) {
+        console.error("[loadSubscription] Error fetching subscription:", error.message);
+        return null;
+      }
+      if (data) {
+        setSubscription(data);
+        return data;
+      }
+      // No active subscription found
+      setSubscription(null);
+      return null;
+    } catch (err) {
+      console.error("[loadSubscription] Exception:", err);
+      return null;
+    }
   };
 
   // ── OPEN / CLOSE ──────────────────────────────────────────────────────
@@ -237,19 +252,6 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
       document.body.appendChild(s);
     });
 
-  // Plan config — must match backend PLANS in api/[route].ts exactly
-  // amounts in paise (₹30 = 3000 paise, ₹300 = 30000, ₹3000 = 300000)
-  const PLAN_CONFIG: Record<string, { amount: number; name: string; description: string }> = {
-    starter: { amount: 3000,   name: "₹1 Plan",   description: "Starter – ₹30/month subscription" },
-    popular: { amount: 30000,  name: "₹10 Plan",  description: "Popular – ₹300/month subscription" },
-    premium: { amount: 300000, name: "₹100 Plan", description: "Premium – ₹3000/month subscription" },
-  };
-
-  const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID;
-  if (!RAZORPAY_KEY_ID) {
-    console.error("VITE_RAZORPAY_KEY_ID is not set — payment will fail");
-  }
-
   const startPayment = async () => {
     if (!plan || !user || loading) return;
     // Guard: don't let already-subscribed users pay again
@@ -268,19 +270,20 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
     try {
       await loadRazorpay();
 
-      const planConfig = PLAN_CONFIG[planId!];
-      if (!planConfig) throw new Error("Invalid plan selected");
+      const { data: orderData, error: orderErr } = await api.createRazorpayOrder({ planId: planId! });
+      if (orderErr || !orderData?.subscriptionId) {
+        throw new Error(orderErr?.message || "Unable to start auto-pay subscription");
+      }
 
       const displayName = user.name || fullName || "Member";
       const displayMobile = mobile || "";
       const displayEmail = user.email || email || "";
 
       const rzpOptions: Record<string, any> = {
-        key: RAZORPAY_KEY_ID,
-        amount: planConfig.amount,          // amount in paise
-        currency: "INR",
+        key: orderData.keyId,
+        subscription_id: orderData.subscriptionId,
         name: "Prince Groups",
-        description: planConfig.description,
+        description: orderData.description,
         prefill: {
           name: displayName,
           contact: displayMobile,
@@ -295,44 +298,41 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
         },
         handler: async (response: any) => {
           try {
-            // STEP 1: Verify Razorpay signature first (security check)
-            const { error: confirmErr } = await api.confirmRazorpayPayment({
+            const { error: verifyErr } = await api.confirmRazorpayPayment({
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_order_id: response.razorpay_order_id,
-              razorpay_subscription_id: response.razorpay_subscription_id,
+              razorpay_subscription_id: response.razorpay_subscription_id || orderData.subscriptionId,
               razorpay_signature: response.razorpay_signature,
             });
-            if (confirmErr) {
-              console.error("Payment verification error:", confirmErr);
+            if (verifyErr) {
+              console.error("Payment verification error:", verifyErr);
               throw new Error("Payment verification failed. Your payment was successful. Please contact support with your payment ID: " + response.razorpay_payment_id);
             }
 
-            // STEP 2: If upgrading, cancel old subscription (best-effort, don't block)
+            // If upgrading, cancel old subscription after the new payment succeeds.
             if (upgradeInFlightRef.current && subscription?.razorpay_subscription_id) {
               const { error: cancelErr } = await api.cancelSubscription({
                 subscriptionId: subscription.id,
                 razorpaySubscriptionId: subscription.razorpay_subscription_id,
               });
               if (cancelErr) {
-                // Log but don't fail — new subscription is active, old one will auto-expire
                 console.error("Failed to cancel old subscription during upgrade:", cancelErr.message);
               }
               upgradeInFlightRef.current = false;
             }
 
-            // STEP 3: Save payment to DB via API worker (also sends email server-side)
-            // The backend has idempotency — safe to retry if network fails
+            // The backend is idempotent, so this is safe to retry after a network hiccup.
             let saveData = null;
             let saveErr = null;
-            for (let attempt = 0; attempt < 2; attempt++) {
+            for (let attempt = 0; attempt < 3; attempt++) {
               const result = await api.savePayment({
                 userId: user.id,
-                planId,
+                planId: planId!,
                 planName: plan.name,
-                razorpaySubscriptionId: response.razorpay_subscription_id || null,
+                razorpaySubscriptionId: response.razorpay_subscription_id || orderData.subscriptionId,
                 razorpayOrderId: response.razorpay_order_id || null,
                 razorpayPaymentId: response.razorpay_payment_id,
-                amount: planConfig.amount,
+                amount: orderData.amount,
                 username: displayName,
                 mobile: displayMobile,
                 email: displayEmail,
@@ -340,25 +340,23 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
               saveData = result.data;
               saveErr = result.error;
               if (!saveErr) break;
-              // Wait 1s before retry
-              await new Promise(r => setTimeout(r, 1000));
+              console.warn(`[payment] savePayment attempt ${attempt + 1} failed:`, saveErr.message);
+              if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1500));
             }
             if (saveErr) {
-              // Payment was verified but DB save failed — tell user to contact support
-              throw new Error("Payment verified but we couldn't save your subscription. Your payment ID: " + response.razorpay_payment_id + ". Please contact support — we will fix this immediately.");
+              throw new Error("Payment verified but we couldn't save your subscription. Your payment ID: " + response.razorpay_payment_id + ". Please contact support - we will fix this immediately.");
             }
-            const subId = saveData?.subscriptionId || response.razorpay_payment_id;
 
-            // STEP 4: Reload subscription record and show success
+            // Reload subscription record and show success
             setSubscription(null); // clear cached so loadSubscription fetches the new one
-            await loadSubscription(user.id);
+            const loadedSub = await loadSubscription(user.id);
+            if (!loadedSub) {
+              // Subscription wasn't found after save — wait a bit and retry (Supabase replication delay)
+              console.warn("[payment] Subscription not found after save, retrying in 2s...");
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+              await loadSubscription(user.id);
+            }
             setStep("success");
-
-            // STEP 5: Auto-redirect to services page after 2 seconds
-            setTimeout(() => {
-              close();
-              navigate({ to: "/my-services" });
-            }, 2000);
           } catch (err) {
             setError((err as Error).message || "Payment verification failed");
           } finally {
@@ -523,8 +521,8 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                       <span className="font-semibold text-pine-deep">{plan.name}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Today's charge</span>
-                      <span className="font-semibold text-pine-deep">₹{plan.price * 30} (1 month)</span>
+                      <span className="text-muted-foreground">First charge</span>
+                      <span className="font-semibold text-pine-deep">₹{plan.price} today</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Then monthly</span>
@@ -551,7 +549,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Pay ₹${plan.price * 30} & Activate Auto-Pay →`
+                      : `Pay ₹${plan.price} & Activate Auto-Pay →`
                     }
                   </button>
                 </div>
@@ -590,11 +588,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                       <span className="font-semibold text-avocado">{plan.discount}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Today's charge</span>
-                      <span className="font-semibold text-pine-deep">₹{plan.price * 30} (1 month)</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Monthly after</span>
+                      <span className="text-muted-foreground">Monthly charge</span>
                       <span className="font-semibold text-pine-deep">₹{plan.price * 30}/month</span>
                     </div>
                   </div>
@@ -610,7 +604,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   >
                     {loading
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
-                      : `Upgrade to ${plan.name} · Pay ₹${plan.price * 30} →`
+                      : `Upgrade to ${plan.name} · Pay ₹${plan.price} →`
                     }
                   </button>
 
@@ -662,7 +656,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   </p>
 
                   <button
-                    onClick={() => { close(); setTimeout(() => navigate({ to: "/my-services" }), 100); }}
+                    onClick={() => { close(); setTimeout(() => navigate({ to: "/my-services", search: { from: undefined } }), 100); }}
                     className="w-full rounded-full bg-hero text-cream font-semibold py-3 shadow-luxury hover:shadow-glow transition"
                   >
                     Go to My Services →

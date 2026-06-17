@@ -53,19 +53,43 @@ function RequestPage() {
           if (!cancelled) { setHasSubscription(false); setSubChecking(false); }
           return;
         }
-        const { data: sub } = await supabase
+
+        // Try with plans join first
+        const { data: subWithPlan, error: joinErr } = await supabase
           .from("subscriptions")
           .select("*, plans(name)")
           .eq("user_id", user.id)
           .eq("status", "active")
           .maybeSingle();
 
+        // Fallback: if join fails, try without join
+        let planNameResult = "";
+        let hasActiveSub = false;
+
+        if (subWithPlan) {
+          hasActiveSub = true;
+          planNameResult = subWithPlan.plans?.name || subWithPlan.plan_id || "Active Member";
+        } else if (joinErr) {
+          console.warn("[request] Subscription query with plans join failed, trying without:", joinErr.message);
+          const { data: subOnly } = await supabase
+            .from("subscriptions")
+            .select("*")
+            .eq("user_id", user.id)
+            .eq("status", "active")
+            .maybeSingle();
+          if (subOnly) {
+            hasActiveSub = true;
+            planNameResult = subOnly.plan_id || "Active Member";
+          }
+        }
+
         if (!cancelled) {
-          setHasSubscription(!!sub);
-          if (sub) setPlanName(sub.plans?.name || "Active Member");
+          setHasSubscription(hasActiveSub);
+          if (hasActiveSub) setPlanName(planNameResult);
           setSubChecking(false);
         }
-      } catch {
+      } catch (err) {
+        console.error("[request] Subscription check failed:", err);
         if (!cancelled) { setHasSubscription(false); setSubChecking(false); }
       }
     }
@@ -104,7 +128,7 @@ function RequestPage() {
       window.open(`https://wa.me/${WHATSAPP}?text=${encodeURIComponent(msg)}`, "_blank");
       setLoading(false);
       setDone(true);
-      setTimeout(() => navigate({ to: "/my-services" }), 1800);
+      setTimeout(() => navigate({ to: "/my-services", search: { from: undefined } }), 1800);
     }, 700);
   };
 
@@ -170,6 +194,7 @@ function RequestPage() {
                 </Link>
                 <Link
                   to="/my-services"
+                  search={{ from: undefined }}
                   className="w-full rounded-full border border-border text-muted-foreground font-semibold py-3 hover:bg-muted transition"
                 >
                   Browse Services
