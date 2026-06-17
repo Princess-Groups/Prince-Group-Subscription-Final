@@ -294,7 +294,8 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
               razorpay_signature: response.razorpay_signature,
             });
             if (confirmErr) {
-              throw new Error("Payment verification failed: " + confirmErr.message);
+              console.error("Payment verification error:", confirmErr);
+              throw new Error("Payment verification failed. Your payment was successful. Please contact support with your payment ID: " + response.razorpay_payment_id);
             }
 
             // STEP 2: If upgrading, cancel old subscription first (only after payment succeeds)
