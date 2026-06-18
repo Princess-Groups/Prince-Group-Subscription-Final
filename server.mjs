@@ -392,13 +392,113 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  // ── CANCEL SUBSCRIPTION ────────────────────────────────────────────
+  if (routeName === "cancel-subscription") {
+    const { subscriptionId, razorpaySubscriptionId } = body;
+    if (!subscriptionId || !razorpaySubscriptionId) {
+      return send(400, { error: "Missing subscription details" });
+    }
+
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    if (!keySecret) return send(500, { error: "RAZORPAY_KEY_SECRET not configured" });
+
+    // Cancel on Razorpay
+    const token = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+    const cancelRes = await fetch(`https://api.razorpay.com/v1/subscriptions/${encodeURIComponent(razorpaySubscriptionId)}/cancel`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ cancel_at_cycle_end: 1 }),
+    });
+    const cancelData = await cancelRes.json();
+    if (!cancelRes.ok) return send(500, { error: cancelData.error?.description || "Failed to cancel" });
+
+    // Update local DB
+    const headers = supabaseHeaders();
+    await fetch(`${SUPABASE_URL}/rest/v1/subscriptions?id=eq.${subscriptionId}`, {
+      method: "PATCH", headers,
+      body: JSON.stringify({ status: "cancelled", cancelled_at: new Date().toISOString(), cancel_at_period_end: true }),
+    }).catch(() => {});
+
+    return send(200, { success: true, message: "Subscription cancelled" });
+  }
+
+  // ── RAZORPAY WEBHOOK ───────────────────────────────────────────────
+  if (routeName === "razorpay-webhook") {
+    const signature = req.headers["x-razorpay-signature"] || "";
+    if (!signature) return send(401, { error: "Missing webhook signature" });
+
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    const expected = createHmac("sha256", keySecret).update(JSON.stringify(body)).digest("hex");
+    if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) {
+      return send(401, { error: "Invalid signature" });
+    }
+
+    const { event: eventType, payload } = body;
+    const headers = supabaseHeaders();
+    console.log(`[webhook] ${eventType}`);
+
+    if (eventType === "payment.authorized" || eventType === "payment.captured") {
+      const entity = payload?.payment?.entity;
+      if (entity) {
+        await fetch(`${SUPABASE_URL}/rest/v1/payments?razorpay_payment_id=eq.${entity.id}`, {
+          method: "PATCH", headers, body: JSON.stringify({ status: entity.status }),
+        }).catch(() => {});
+      }
+    }
+
+    if (eventType === "payment.failed") {
+      const entity = payload?.payment?.entity;
+      if (entity) {
+        await fetch(`${SUPABASE_URL}/rest/v1/payments?razorpay_payment_id=eq.${entity.id}`, {
+          method: "PATCH", headers,
+          body: JSON.stringify({ status: "failed", error_code: entity.error_code, error_description: entity.error_description }),
+        }).catch(() => {});
+      }
+    }
+
+    if (eventType === "subscription.activated" || eventType === "subscription.charged") {
+      const entity = payload?.subscription?.entity;
+      if (entity) {
+        const nextCharge = entity.current_end ? new Date(entity.current_end * 1000).toISOString() : null;
+        const update = { status: "active", paid_count: entity.paid_count };
+        if (nextCharge) update.next_charge_at = nextCharge;
+        await fetch(`${SUPABASE_URL}/rest/v1/subscriptions?razorpay_subscription_id=eq.${entity.id}`, {
+          method: "PATCH", headers, body: JSON.stringify(update),
+        }).catch(() => {});
+      }
+    }
+
+    if (eventType === "subscription.cancelled") {
+      const entity = payload?.subscription?.entity;
+      if (entity) {
+        await fetch(`${SUPABASE_URL}/rest/v1/subscriptions?razorpay_subscription_id=eq.${entity.id}`, {
+          method: "PATCH", headers, body: JSON.stringify({ status: "cancelled", cancelled_at: new Date().toISOString() }),
+        }).catch(() => {});
+      }
+    }
+
+    if (eventType === "subscription.completed" || eventType === "subscription.expired") {
+      const entity = payload?.subscription?.entity;
+      if (entity) {
+        await fetch(`${SUPABASE_URL}/rest/v1/subscriptions?razorpay_subscription_id=eq.${entity.id}`, {
+          method: "PATCH", headers, body: JSON.stringify({ status: eventType === "subscription.completed" ? "completed" : "expired" }),
+        }).catch(() => {});
+      }
+    }
+
+    return send(200, { success: true });
+  }
+
   // ── Catch-all ───────────────────────────────────────────────────────
   return send(404, { error: `Unknown route: ${routeName}` });
 });
 
 server.listen(PORT, () => {
   console.log(`\n  🛡️  API server running at http://localhost:${PORT}`);
-  console.log(`  📌 POST /admin-login  — Admin login (PrinceAdmin / BeemBoy@123)`);
+  console.log(`  📌 POST /admin-login       — Admin login (PrinceAdmin / BeemBoy@123)`);
+  console.log(`  📌 POST /cancel-subscription — Cancel a subscription`);
+  console.log(`  📌 POST /razorpay-webhook   — Razorpay webhook handler`);
   console.log(`  🔑 Service Role Key: ${SUPABASE_SERVICE_ROLE_KEY ? "✅ Loaded" : "❌ Not set"}`);
   console.log(`  ⚡ Supabase URL: ${SUPABASE_URL}\n`);
 });

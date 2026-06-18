@@ -6,9 +6,6 @@
   "functions": {
     "api/[route].ts": {
       "maxDuration": 30
-    },
-    "api/admin-login.ts": {
-      "maxDuration": 30
     }
   },
   "rewrites": [
