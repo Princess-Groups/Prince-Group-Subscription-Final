@@ -189,7 +189,77 @@ const confirmRazorpayPayment: RouteHandler = async (req, res) => {
   return res.status(200).json({ success: true, payment: payData });
 };
 
-// ─── 4. SAVE PAYMENT ──────────────────────────────────────
+// ─── 4. SEND WHATSAPP NOTIFICATIONS ──────────────────────
+async function sendWhatsAppNotifications(data: {
+  subscriptionId: string;
+  planName: string;
+  username: string;
+  mobile: string;
+}) {
+  const { subscriptionId, planName, username, mobile } = data;
+  const WHATSAPP_API_TOKEN = env("WHATSAPP_API_TOKEN");
+  const WHATSAPP_PHONE_ID = env("WHATSAPP_PHONE_ID");
+  const OWNER_WHATSAPP = env("OWNER_WHATSAPP") || "919559155535";
+
+  if (!WHATSAPP_API_TOKEN || !WHATSAPP_PHONE_ID) {
+    console.warn("[whatsapp] Credentials not set, skipping");
+    return;
+  }
+
+  const sendWhatsAppMessage = async (to: string, message: string) => {
+    try {
+      const res = await fetch(`https://graph.facebook.com/v19.0/${WHATSAPP_PHONE_ID}/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: message },
+        }),
+      });
+      if (!res.ok) {
+        console.error(`[whatsapp] API error for ${to}:`, await res.text());
+      } else {
+        console.log(`[whatsapp] Message sent to ${to}`);
+      }
+    } catch (err) {
+      console.error(`[whatsapp] Send failed for ${to}:`, err);
+    }
+  };
+
+  // Send welcome message to customer
+  if (mobile && mobile.length >= 10) {
+    const customerPhone = mobile.startsWith("91") ? mobile : "91" + mobile;
+    const customerMessage =
+      `🎉 *Welcome to Prince Groups!*\n\n` +
+      `Hi ${username || "Valued Member"}! 👋\n\n` +
+      `Your membership is now *active*.\n\n` +
+      `📦 *Plan:* ${planName}\n` +
+      `✅ *Auto-Pay:* Enabled\n` +
+      `📅 *Next charge:* In 30 days\n` +
+      `🔑 *Sub ID:* ${subscriptionId}\n\n` +
+      `Thank you for joining! For any queries, contact us on WhatsApp or call 9559155535.\n\n` +
+      `_Prince Groups — Kanyakumari_`;
+    await sendWhatsAppMessage(customerPhone, customerMessage);
+  }
+
+  // Notify the owner
+  const ownerMessage =
+    `🎉 *New Subscription Activated!*\n\n` +
+    `👤 *Name:* ${username || "N/A"}\n` +
+    `📱 *Mobile:* ${mobile || "N/A"}\n` +
+    `📦 *Plan:* ${planName}\n` +
+    `🔑 *Sub ID:* ${subscriptionId}\n` +
+    `✅ *Auto-Pay:* Enabled (Razorpay)\n\n` +
+    `_Prince Groups — Kanyakumari_`;
+  await sendWhatsAppMessage(OWNER_WHATSAPP, ownerMessage);
+}
+
+// ─── 5. SAVE PAYMENT ──────────────────────────────────────
 const savePayment: RouteHandler = async (req, res) => {
   const {
     userId, planId, planName, razorpayOrderId, razorpayPaymentId, razorpaySubscriptionId,
@@ -281,10 +351,18 @@ const savePayment: RouteHandler = async (req, res) => {
     }).catch(() => {});
   }
 
+  // Send WhatsApp notifications (fire-and-forget — don't block the response)
+  sendWhatsAppNotifications({
+    subscriptionId: subId,
+    planName: planName || planId,
+    username: username || "",
+    mobile: mobile || "",
+  }).catch((err) => console.error("[save-payment] WhatsApp notification failed:", err));
+
   return res.status(200).json({ success: true, subscriptionId: subId });
 };
 
-// ─── 5. CANCEL SUBSCRIPTION ───────────────────────────────
+// ─── 6. CANCEL SUBSCRIPTION ───────────────────────────────
 const cancelSubscription: RouteHandler = async (req, res) => {
   const { subscriptionId, razorpaySubscriptionId } = await readJson(req);
   if (!subscriptionId || !razorpaySubscriptionId) {

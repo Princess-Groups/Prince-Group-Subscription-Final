@@ -104,6 +104,16 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
     }
   }, [subscription, planId, step]);
 
+  // Auto-redirect to services after successful payment
+  useEffect(() => {
+    if (step !== "success") return;
+    const timer = setTimeout(() => {
+      close();
+      navigate({ to: "/my-services", search: { from: "payment" } });
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [step]);
+
   const loadSubscription = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -659,7 +669,7 @@ export function SubscribeProvider({ children }: { children: ReactNode }) {
                   </p>
 
                   <button
-                    onClick={() => { close(); setTimeout(() => navigate({ to: "/my-services", search: { from: undefined } }), 100); }}
+                    onClick={() => { close(); navigate({ to: "/my-services", search: { from: "payment" } }); }}
                     className="w-full rounded-full bg-hero text-cream font-semibold py-3 shadow-luxury hover:shadow-glow transition"
                   >
                     Go to My Services →
