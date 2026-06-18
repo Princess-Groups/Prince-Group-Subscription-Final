@@ -79,9 +79,25 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
   const headers = razorpayAuth();
   const supHeaders = supabaseHeaders();
 
-  // Find or create Razorpay plan
-  const searchRes = await fetch("https://api.razorpay.com/v1/plans?count=100", { headers });
+  // Run Razorpay plan search and Supabase plan check in parallel
+  const [searchRes, existingPlan] = await Promise.all([
+    fetch("https://api.razorpay.com/v1/plans?count=100", { headers }),
+    fetch(`${env("SUPABASE_URL")}/rest/v1/plans?id=eq.${planId}&select=id`, { headers: supHeaders }),
+  ]);
   const searchData: any = await searchRes.json();
+
+  // Ensure plan row exists in Supabase (prevents FK violation on subscriptions insert)
+  if (existingPlan.ok) {
+    const rows = await existingPlan.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      await fetch(`${env("SUPABASE_URL")}/rest/v1/plans`, {
+        method: "POST", headers: supHeaders,
+        body: JSON.stringify({ id: planId, name: plan.name, initial_amount: plan.amount, monthly_amount: plan.amount, active: true }),
+      }).catch((e) => console.error("[create-order] Plan upsert failed:", e));
+    }
+  }
+
+  // Find or create Razorpay plan
   let rzpPlanId = (searchData.items || []).find(
     (p: any) => p.notes?.plan_id === planId && p.period === "monthly"
   )?.id;
@@ -113,18 +129,6 @@ const createRazorpayOrder: RouteHandler = async (req, res) => {
       method: "PATCH", headers: supHeaders,
       body: JSON.stringify({ razorpay_plan_id: rzpPlanId }),
     }).catch(() => {});
-  }
-
-  // Ensure plan row exists in Supabase (prevents FK violation on subscriptions insert)
-  const existingPlan = await fetch(`${env("SUPABASE_URL")}/rest/v1/plans?id=eq.${planId}&select=id`, { headers: supHeaders });
-  if (existingPlan.ok) {
-    const rows = await existingPlan.json();
-    if (!Array.isArray(rows) || rows.length === 0) {
-      await fetch(`${env("SUPABASE_URL")}/rest/v1/plans`, {
-        method: "POST", headers: supHeaders,
-        body: JSON.stringify({ id: planId, name: plan.name, initial_amount: plan.amount, monthly_amount: plan.amount, active: true }),
-      }).catch((e) => console.error("[create-order] Plan upsert failed:", e));
-    }
   }
 
   // Create Razorpay subscription
@@ -291,13 +295,16 @@ const savePayment: RouteHandler = async (req, res) => {
   );
   if (existingSubs.ok) {
     const subs = await existingSubs.json();
-    if (Array.isArray(subs)) {
-      for (const sub of subs) {
-        await fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?id=eq.${sub.id}`, {
-          method: "PATCH", headers,
-          body: JSON.stringify({ status: "cancelled", cancelled_at: new Date().toISOString() }),
-        }).catch(() => {});
-      }
+    if (Array.isArray(subs) && subs.length > 0) {
+      // Deactivate all in parallel instead of sequentially
+      await Promise.all(
+        subs.map((sub: any) =>
+          fetch(`${env("SUPABASE_URL")}/rest/v1/subscriptions?id=eq.${sub.id}`, {
+            method: "PATCH", headers,
+            body: JSON.stringify({ status: "cancelled", cancelled_at: new Date().toISOString() }),
+          }).catch(() => {})
+        )
+      );
     }
   }
 

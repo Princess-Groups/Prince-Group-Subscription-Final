@@ -96,6 +96,7 @@ create table public.subscriptions (
 );
 alter table public.subscriptions enable row level security;
 create index idx_subscriptions_user on public.subscriptions(user_id);
+create index idx_subscriptions_user_status on public.subscriptions(user_id, status);
 create index idx_subscriptions_rzp on public.subscriptions(razorpay_subscription_id);
 
 -- ============ PAYMENTS ============

@@ -48,7 +48,7 @@ function Index() {
           muted
           loop
           playsInline
-          preload="auto"
+          preload="none"
           poster={heroBg}
           className="absolute inset-0 h-full w-full object-cover"
         />

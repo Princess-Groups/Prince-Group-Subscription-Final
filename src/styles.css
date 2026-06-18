@@ -129,6 +129,15 @@
   0%,100% { box-shadow: 0 0 20px color-mix(in oklab, var(--pine) 35%, transparent), 0 0 40px color-mix(in oklab, var(--avocado) 25%, transparent); }
   50% { box-shadow: 0 0 35px color-mix(in oklab, var(--pine) 60%, transparent), 0 0 70px color-mix(in oklab, var(--avocado) 40%, transparent); }
 }
+
+/* Reduce animations on mobile for better performance */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
@@ -188,14 +197,14 @@
   }
   .glass {
     background: color-mix(in oklab, white 70%, transparent);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
     border: 1px solid color-mix(in oklab, white 60%, transparent);
   }
   .glass-dark {
     background: color-mix(in oklab, var(--pine-deep) 35%, transparent);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
     border: 1px solid color-mix(in oklab, white 18%, transparent);
   }
   .shadow-luxury { box-shadow: var(--shadow-luxury); }
